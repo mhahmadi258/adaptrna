@@ -1,0 +1,44 @@
+# Mean ribosome load. Scheduler values reproduce the RiNALMo paper's recipe: "lr 1e-4
+# linearly decayed to 1e-5 over the first 5000 steps, then constant, batch size 64,
+# 50 epochs, head-only for the first 5".
+
+task: mrl
+lm_config: giga
+
+head:
+  head_embed_dim: 32
+  num_blocks: 6
+  dropout: 0.2
+
+data:
+  root: dataset/mrl_data
+  batch_size: 64
+  num_workers: 32
+  pin_memory: true
+  val_split: random7600       # random7600 | holdout -- see the README's "Known pitfalls"
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3
+  target_modules: [mh_attn.Wqkv, mh_attn.out_proj]
+
+optim:
+  name: adam
+  lr: 1.0e-4
+  scheduler:
+    name: linear
+    start_factor: 1.0
+    end_factor: 0.1
+    total_iters: 5000
+    interval: step
+
+trainer:
+  max_epochs: 50
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+
+finetune:
+  schedule: null
+  initial_denom_lr: 1.0

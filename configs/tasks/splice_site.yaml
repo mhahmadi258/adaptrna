@@ -1,0 +1,41 @@
+# Splice site prediction on the Spliceator data. `data.root` holds the training/validation
+# folds (GS_1/db_1 .. db_10), `data.test_root` holds the four benchmark species.
+
+task: splice_site
+lm_config: giga
+
+head:
+  head_embed_dim: 128
+
+data:
+  root: dataset/train_data
+  test_root: dataset/test_data
+  ss_type: donor              # donor | acceptor
+  dataset_id: db_1            # db_1 .. db_10
+  species: Danio              # Danio | Fly | Thaliana | Worm
+  batch_size: 32
+  num_workers: 16
+  pin_memory: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3
+  target_modules: [mh_attn.Wqkv, mh_attn.out_proj]
+
+optim:
+  name: adamw
+  lr: 1.0e-5                  # full-FT default; the LoRA arm uses 3e-4
+  weight_decay: 1.0e-6
+  scheduler:
+    name: none
+
+trainer:
+  max_epochs: 2               # what the reference donor runs used (19,775 train sequences)
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+
+finetune:
+  schedule: null
+  initial_denom_lr: 1.0

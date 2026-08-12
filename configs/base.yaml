@@ -1,0 +1,50 @@
+# Defaults for every task. Task YAMLs in configs/tasks/ override these, and `--set
+# dotted.key=value` on the command line overrides both.
+
+task: null                    # set by the task YAML (or --task)
+lm_config: giga               # nano | micro | mega | giga
+pretrained_weights: weights/giga-v1.pt
+seed: null
+
+use_lora: false               # --use_lora sets this
+
+head: {}                      # kwargs for the task's build_head()
+task_config: {}               # task-specific knobs that are not head kwargs
+
+data:
+  batch_size: 1
+  num_workers: 0
+  pin_memory: false
+  prepare: false              # --prepare_data sets this; downloads the dataset
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3             # adapt every n-th block: 3 -> 11 of the 33 "giga" blocks
+  layers: null                # explicit block indices; overrides layer_stride
+  target_modules: [mh_attn.Wqkv, mh_attn.out_proj]
+
+optim:
+  name: adam                  # adam | adamw | sgd
+  lr: 1.0e-4
+  weight_decay: null
+  scheduler:
+    name: none                # none | linear | cosine | constant
+    interval: step
+
+trainer:
+  accelerator: auto
+  devices: auto
+  max_epochs: -1
+  max_steps: -1
+  precision: bf16-mixed       # fp16's range is a real risk at these learning rates
+  gradient_clip_val: null
+  log_every_n_steps: 50
+  progress_refresh_rate: 50
+  checkpoint_every_epoch: false   # a full-FT checkpoint is 7.8 GB; off by default
+
+finetune:
+  schedule: null              # path to a ft_schedules/*.yaml, full FT only
+  initial_denom_lr: 1.0       # Lightning's own default of 10.0 silently trains the
+                              # backbone an order of magnitude below the configured lr

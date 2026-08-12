@@ -1,0 +1,6 @@
+# Head plus the whole transformer from step one -- the arrangement the source's splice-site
+# script hardcoded as optimizer param groups. Only the embedding and the (unused) masked
+# language model head stay frozen.
+0:
+    - head.*
+    - backbone.transformer.*

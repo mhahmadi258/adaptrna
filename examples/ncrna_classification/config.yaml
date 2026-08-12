@@ -1,0 +1,34 @@
+# Step 2 of "adding a new task": the config. Layered on top of configs/base.yaml.
+
+task: ncrna_classification
+lm_config: giga
+
+head:
+  head_embed_dim: 256
+  n_classes: 88
+
+data:
+  root: dataset/ncrna
+  batch_size: 32
+  num_workers: 16
+  pin_memory: true
+  boundary_noise: ""          # "" | "_boundary_noise_0" ... matches the CSV file names
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3
+  target_modules: [mh_attn.Wqkv, mh_attn.out_proj]
+
+optim:
+  name: adamw
+  lr: 3.0e-4                  # the LoRA arm; full FT used 8e-6
+  weight_decay: 0.01
+  scheduler:
+    name: none
+
+trainer:
+  max_epochs: 10
+  precision: bf16-mixed
+  gradient_clip_val: 1.0

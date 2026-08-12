@@ -1,0 +1,49 @@
+# Secondary structure prediction. The datamodule feeds one structure at a time (the head is
+# O(L^2)), so there is no batch size to set. Secondary structure legitimately needs its
+# validation set: `threshold` is tuned on it every `tune_threshold_every_n_epoch` epochs.
+
+task: sec_struct
+lm_config: giga
+
+head:
+  num_resnet_blocks: 2
+  conv_dim: 64
+  kernel_size: 3
+
+task_config:
+  tune_threshold_every_n_epoch: 1
+  save_test_ct_files: false   # writes one .ct per test structure into the output dir
+
+data:
+  root: dataset/sec_struct
+  dataset: bpRNA              # bpRNA | archiveII_{5s,16s,23s,grp1,srp,telomerase,RNaseP,tmRNA,tRNA}
+  num_workers: 8
+  pin_memory: true
+  min_seq_len: 0
+  max_seq_len: 999999999
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3
+  target_modules: [mh_attn.Wqkv, mh_attn.out_proj]
+
+optim:
+  name: adam
+  lr: 5.0e-4                  # full-FT default under the gradual-unfreezing schedule
+  scheduler:
+    name: linear
+    start_factor: 1.0
+    end_factor: 0.1
+    total_iters: 7000
+    interval: step
+
+trainer:
+  max_epochs: 25
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+
+finetune:
+  schedule: null
+  initial_denom_lr: 1.0

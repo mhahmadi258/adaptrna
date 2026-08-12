@@ -1,0 +1,37 @@
+# Ported from the source repo's `giga_sec_struct_ft.yaml`: head-only for 3 epochs, then
+# three transformer blocks unfrozen every 3 epochs from the output end downwards.
+0:
+    - head.*
+3:
+    - backbone.transformer.final_layer_norm.*
+    - backbone.transformer.blocks.32.*
+    - backbone.transformer.blocks.31.*
+    - backbone.transformer.blocks.30.*
+6:
+    - backbone.transformer.blocks.29.*
+    - backbone.transformer.blocks.28.*
+    - backbone.transformer.blocks.27.*
+9:
+    - backbone.transformer.blocks.26.*
+    - backbone.transformer.blocks.25.*
+    - backbone.transformer.blocks.24.*
+12:
+    - backbone.transformer.blocks.23.*
+    - backbone.transformer.blocks.22.*
+    - backbone.transformer.blocks.21.*
+15:
+    - backbone.transformer.blocks.20.*
+    - backbone.transformer.blocks.19.*
+    - backbone.transformer.blocks.18.*
+18:
+    - backbone.transformer.blocks.17.*
+    - backbone.transformer.blocks.16.*
+    - backbone.transformer.blocks.15.*
+21:
+    - backbone.transformer.blocks.14.*
+    - backbone.transformer.blocks.13.*
+    - backbone.transformer.blocks.12.*
+24:
+    - backbone.transformer.blocks.11.*
+    - backbone.transformer.blocks.10.*
+    - backbone.transformer.blocks.9.*

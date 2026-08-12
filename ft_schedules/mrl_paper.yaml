@@ -1,0 +1,15 @@
+# Fine-tuning schedule matching the RiNALMo paper's MRL recipe:
+# "In the first 5 epochs of the training, only the prediction head was trained."
+#
+# `backbone.*` matches the backbone root, and GradualUnfreezing drops children of an
+# already collected parent, so this unfreezes the entire language model in one go.
+#
+# NOTE the epoch index differs from the source repo's `giga_mrl_paper_ft.yaml`, which
+# unfroze at epoch 6. There, Lightning epoch 0 was consumed by the target scaler fit
+# (`training_step` returned None, so no optimizer step ran) and every schedule index was
+# shifted by one. Here the scaler is fitted in `on_fit_start`, so epoch 0 is a real
+# training epoch and the backbone joins at epoch 5.
+0:
+    - head.*
+5:
+    - backbone.*

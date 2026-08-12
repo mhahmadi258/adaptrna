@@ -1,0 +1,8 @@
+# Ported from the source repo's `giga_mrl_ft.yaml`. Head-only for 3 epochs, then the
+# final layer norm and blocks 6..32; blocks 0-5 and the embedding stay frozen for the
+# whole run. See `mrl_paper.yaml` for the recipe that reproduces the paper's numbers.
+0:
+    - head.*
+3:
+    - backbone.transformer.final_layer_norm.*
+    - backbone.transformer.blocks.([1-9]+[0-9]+|[6-9]+).*

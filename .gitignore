@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Data, weights and run outputs -- none of this belongs in the repo
+dataset/
+weights/
+outputs/
+adapters/
+*.pt
+*.ckpt
