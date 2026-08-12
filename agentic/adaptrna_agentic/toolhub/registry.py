@@ -116,12 +116,17 @@ class Registry:
                 f"`toolhub config --lm-config {payload['lm_config']}`.)"
             )
 
+        # Copy to a temp name first and only move it into place once the manifest write
+        # has succeeded: a failure between the two would otherwise leave an orphaned
+        # artifact (copy-first) or an entry pointing at nothing (manifest-first).
+        dest = staged_copy = None
         if link:
             artifact = str(source)
         else:
             dest = self.data_dir / "adapters" / f"{name}.pt"
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
+            staged_copy = dest.with_suffix(".pt.incoming")
+            shutil.copy2(source, staged_copy)
             try:
                 artifact = str(dest.relative_to(REPO_ROOT))
             except ValueError:
@@ -155,7 +160,17 @@ class Registry:
         )
 
         self.manifest.tools[name] = entry
-        self.manifest.save()
+        try:
+            self.manifest.save()
+        except BaseException:
+            self.manifest.tools.pop(name, None)
+            if staged_copy is not None:
+                staged_copy.unlink(missing_ok=True)
+            raise
+
+        if staged_copy is not None:
+            staged_copy.replace(dest)
+
         return entry
 
     def register_external(
@@ -274,6 +289,31 @@ class Registry:
             return True
         except ValueError:
             return False
+
+    def verify(self) -> Dict[str, Any]:
+        """Manifest ↔ disk consistency, in both directions. Read-only; feeds `doctor`."""
+        missing, orphans = [], []
+
+        for entry in self.list():
+            path = entry.artifact_path()
+            if entry.type == "adapter" and (path is None or not path.exists()):
+                missing.append({"tool": entry.name, "artifact": str(path)})
+
+        referenced = {
+            str(e.artifact_path().resolve())
+            for e in self.list()
+            if e.artifact_path() is not None and e.artifact_path().exists()
+        }
+        adapters_dir = self.data_dir / "adapters"
+        if adapters_dir.is_dir():
+            for candidate in sorted(adapters_dir.glob("*.pt")):
+                if str(candidate.resolve()) not in referenced:
+                    orphans.append({
+                        "artifact": str(candidate),
+                        "size_bytes": candidate.stat().st_size,
+                    })
+
+        return {"missing_artifacts": missing, "orphan_artifacts": orphans}
 
     # ------------------------------------------------------------------ backbone config
 

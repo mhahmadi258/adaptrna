@@ -22,12 +22,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _pid_alive(pid: Optional[int]) -> bool:
-    """Is this PID a live process?
+def process_starttime(pid: int) -> Optional[str]:
+    """Process start time in clock ticks — `/proc/<pid>/stat` field 22.
 
-    A child that has exited but not been reaped is a *zombie*: it still answers signal 0,
-    so `os.kill(pid, 0)` alone would report a crashed run as running forever. Check the
-    process state as well.
+    `(pid, starttime)` is a stable identity for a process on Linux: the kernel recycles
+    PIDs, but a recycled PID always has a later start time.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # The comm field is parenthesised and may contain spaces, so split after it:
+        # field 22 overall is index 19 of the remainder.
+        return stat.rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def _process_state(pid: int) -> Optional[str]:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def _is_our_process(pid: Optional[int], starttime: Optional[str]) -> bool:
+    """Is this PID still *our* live process?
+
+    Three ways the answer is no, and all three matter:
+      * the PID is gone;
+      * the PID exists but is a zombie — it has exited and merely awaits reaping, and a
+        zombie still answers signal 0;
+      * the PID exists but belongs to somebody else now, because it was recycled. Records
+        written before start times were captured fall here too: without an identity we
+        must assume the worst rather than signal a stranger.
     """
     if not pid:
         return False
@@ -37,15 +63,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        # Someone else's process — definitively not ours.
+        return False
 
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        # The comm field is parenthesised and may contain spaces; state follows it.
-        state = stat.rsplit(")", 1)[1].split()[0]
-        return state != "Z"
-    except (OSError, IndexError):
-        return True
+    if _process_state(pid) == "Z":
+        return False
+
+    if starttime is None:
+        return False
+
+    return process_starttime(pid) == starttime
 
 
 class JobRunner:
@@ -98,6 +125,7 @@ class JobRunner:
             output_dir=str(output_dir),
             state="running",
             pid=process.pid,
+            pid_starttime=process_starttime(process.pid),
             started_at=_now(),
             plan=plan,
         )
@@ -142,7 +170,22 @@ class JobRunner:
         return "\n".join(lines[-tail:])
 
     def cancel(self, job_id: str) -> Dict[str, Any]:
-        record = self._refresh(self.store.get(job_id))
+        record = self.store.get(job_id)
+
+        # Identity is checked *before* the state check so the specific reason wins: never
+        # signal a PID we cannot prove is still ours, because killpg on a recycled PID
+        # would take out an unrelated process group.
+        if record.state == "running" and not _is_our_process(record.pid, record.pid_starttime):
+            record.state = "failed"
+            record.ended_at = record.ended_at or _now()
+            self.store.save()
+            raise ToolHubError(
+                f"Job '{job_id}' is no longer running (its process is gone, and PID "
+                f"{record.pid} may since have been reused — refusing to signal it). "
+                f"The record has been marked failed."
+            )
+
+        record = self._refresh(record)
         if record.state != "running":
             raise ToolHubError(f"Job '{job_id}' is not running (state: {record.state}).")
 
@@ -183,7 +226,7 @@ class JobRunner:
             record.state = "succeeded" if code == 0 else "failed"
             record.ended_at = record.ended_at or _now()
             record.adapter_path = record.adapter_path or _find_adapter(record)
-        elif returncode is not None or not _pid_alive(record.pid):
+        elif returncode is not None or not _is_our_process(record.pid, record.pid_starttime):
             # Gone without writing an exit code: SIGKILL, OOM, or a hard crash.
             record.state = "failed"
             record.exit_code = returncode

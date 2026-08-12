@@ -1,0 +1,21 @@
+name: management
+description: |
+  Flow B. Disabling a tool makes it refuse with the fix in the message; re-enabling and
+  using it in the SAME turn works, which is the Phase 4 binding policy.
+tools: [splice_site, dummy]
+turns:
+  - user: Turn off dummy_add, then try to use it.
+    script:
+      - tool_calls: [{name: deactivate_tool, args: {name: dummy_add}}]
+      - tool_calls: [{name: dummy_add, args: {a: 2, b: 3}, id: call_2}]
+      - text: It is disabled; shall I re-enable it?
+    expect_tools: [deactivate_tool, dummy_add]
+    expect_tool_result_contains: [activate_tool]
+  - user: Re-enable it and add 2 and 3.
+    script:
+      - tool_calls: [{name: activate_tool, args: {name: dummy_add}}]
+      - tool_calls: [{name: dummy_add, args: {a: 2, b: 3}, id: call_3}]
+      - text: 2 + 3 = 5.
+    expect_tools: [activate_tool, dummy_add]
+    expect_tool_result_contains: ['"total": 5.0']
+    expect_state: {dummy_add: active}

@@ -9,13 +9,14 @@ then `ADAPTRNA_TOOLHUB_DIR`, then `<repo>/toolhub_data`.
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 import contextlib
 import json
 import os
 import tempfile
 
 from adaptrna_agentic.settings import REPO_ROOT
+from adaptrna_agentic.toolhub.errors import ConcurrentModificationError
 
 FORMAT_VERSION = 1
 
@@ -110,10 +111,21 @@ class Manifest:
     data_dir: Path
     backbone: BackboneConfig = field(default_factory=BackboneConfig)
     tools: Dict[str, ToolEntry] = field(default_factory=dict)
+    #: Revision read from the file. A monotonic counter *inside* the file, not a
+    #: timestamp: two writes of identical content within one filesystem timestamp
+    #: tick are indistinguishable by mtime, and that is exactly the racing case.
+    revision: int = field(default=0, repr=False)
 
     @property
     def path(self) -> Path:
         return self.data_dir / "tools.json"
+
+    def disk_revision(self) -> Optional[int]:
+        """The revision currently on disk, or None when there is no file yet."""
+        try:
+            return int(json.loads(self.path.read_text()).get("revision", 0))
+        except (FileNotFoundError, ValueError):
+            return None
 
     @classmethod
     def load(cls, data_dir: Optional[Union[str, Path]] = None) -> "Manifest":
@@ -137,7 +149,7 @@ class Manifest:
                 f"Manifest '{path}' has format version {version}; this build reads {FORMAT_VERSION}"
             )
 
-        return cls(
+        manifest = cls(
             data_dir=data_dir,
             backbone=BackboneConfig(**payload.get("backbone", {})),
             # The tool name is the dict key on disk; inject it back into the entry.
@@ -146,12 +158,27 @@ class Manifest:
                 for name, entry in payload.get("tools", {}).items()
             },
         )
+        manifest.revision = int(payload.get("revision", 0))
+
+        return manifest
 
     def save(self) -> Path:
+        # Refuse to write over somebody else's changes rather than silently discarding
+        # them: two chat processes, or a chat plus a CLI, is an ordinary situation.
+        expected = self.revision if self.path.exists() else None
+        if self.disk_revision() != expected:
+            raise ConcurrentModificationError(
+                f"'{self.path}' changed on disk since it was read — another process "
+                f"registered or changed a tool. Nothing was written; retry the operation "
+                f"so it applies on top of their change."
+            )
+
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
+        next_revision = self.revision + 1
         payload = {
             "format_version": FORMAT_VERSION,
+            "revision": next_revision,
             "backbone": asdict(self.backbone),
             "tools": {
                 name: {k: v for k, v in asdict(entry).items() if k != "name"}
@@ -167,6 +194,7 @@ class Manifest:
                 json.dump(payload, handle, indent=2)
                 handle.write("\n")
             os.replace(tmp_name, self.path)
+            self.revision = next_revision
         except BaseException:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_name)

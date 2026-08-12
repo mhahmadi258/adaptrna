@@ -29,11 +29,17 @@ class AdapterRuntime:
 
     # ------------------------------------------------------------------ lifecycle
 
-    def warmup(self) -> None:
-        """Eagerly load the backbone and make every active adapter resident."""
+    def warmup(self) -> List[str]:
+        """Eagerly load the backbone and make every active adapter resident.
+
+        Returns the problems it hit rather than raising: warmup is a convenience, and one
+        tool with a missing artifact must not stop a chat from starting. The per-tool
+        check still fires — with the same message — the moment that tool is actually used.
+        """
         if self._hub is None:
             self._hub = self._build_hub()
-        self._register_active()
+
+        return self._register_active(strict=False)
 
     def rebuild(self) -> None:
         """Drop the resident hub entirely — the full-cleanup counterpart of routing-level
@@ -85,11 +91,34 @@ class AdapterRuntime:
 
         load_all()
 
-    def _register_active(self) -> None:
+    @staticmethod
+    def _require_artifact(entry) -> None:
+        """A missing adapter file otherwise surfaces as a raw torch/OS error from deep
+        inside the engine's loader, which never names the tool that is broken."""
+        path = entry.artifact_path()
+        if path is None or not path.exists():
+            raise ToolHubError(
+                f"Tool '{entry.name}' points at '{path}', which does not exist. "
+                f"Restore the file, or drop the tool with `toolhub remove {entry.name}`. "
+                f"(`toolhub doctor` lists every such mismatch.)"
+            )
+
+    def _register_active(self, strict: bool = True) -> List[str]:
+        problems: List[str] = []
+
         for entry in self.registry.list():
             if entry.type == "adapter" and entry.active and entry.name not in self._resident:
-                self._hub.register(str(entry.artifact_path()), name=entry.name)
+                try:
+                    self._require_artifact(entry)
+                    self._hub.register(str(entry.artifact_path()), name=entry.name)
+                except ToolHubError as exc:
+                    if strict:
+                        raise
+                    problems.append(str(exc))
+                    continue
                 self._resident.add(entry.name)
+
+        return problems
 
     def _ensure_tool(self, name: str) -> ToolEntry:
         entry = self.registry.get(name)
@@ -106,6 +135,7 @@ class AdapterRuntime:
 
         if self._hub is None:
             self._hub = self._build_hub()
+        self._require_artifact(entry)
         if name not in self._resident:
             # Covers tools registered or re-activated after the hub was built.
             self._hub.register(str(entry.artifact_path()), name=name)

@@ -142,7 +142,9 @@ def test_task_without_a_reference_band_says_so(tmp_path):
     report = analyze_run(directory, task="sec_struct")
 
     assert report["verdict"] == VERDICT_OK
-    assert any("no in-repo reference" in check for check in report["checks"])
+    # Phase 7 replaced "nothing to compare" with a baseline statement: a first run of an
+    # unknown task establishes the number future runs are measured against.
+    assert any("baseline" in check for check in report["checks"])
 
 
 def test_plan_supplies_task_and_arm(tmp_path):

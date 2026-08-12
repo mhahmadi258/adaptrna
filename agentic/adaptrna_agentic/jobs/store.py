@@ -6,13 +6,14 @@ disk alone: training runs are detached and outlive the chat process that started
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import contextlib
 import json
 import os
 import tempfile
 
 from adaptrna_agentic.settings import REPO_ROOT
+from adaptrna_agentic.toolhub.errors import ConcurrentModificationError
 
 FORMAT_VERSION = 1
 
@@ -42,6 +43,10 @@ class JobRecord:
     output_dir: str
     state: str = "running"          # running | succeeded | failed | cancelled
     pid: Optional[int] = None
+    #: Process start time in clock ticks (/proc/<pid>/stat field 22). A PID alone is not
+    #: an identity: it is recycled, and a recycled PID would make a dead job look alive
+    #: and — worse — make `cancel` signal an unrelated process group.
+    pid_starttime: Optional[str] = None
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     exit_code: Optional[int] = None
@@ -62,11 +67,19 @@ class JobStore:
     def __init__(self, jobs_dir: Optional[Union[str, Path]] = None):
         self.jobs_dir = resolve_jobs_dir(jobs_dir)
         self.jobs: Dict[str, JobRecord] = {}
+        self.revision: int = 0
         self._load()
 
     @property
     def path(self) -> Path:
         return self.jobs_dir / "jobs.json"
+
+    def disk_revision(self) -> Optional[int]:
+        """The revision currently on disk, or None when there is no file yet."""
+        try:
+            return int(json.loads(self.path.read_text()).get("revision", 0))
+        except (FileNotFoundError, ValueError):
+            return None
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -84,16 +97,27 @@ class JobStore:
                 f"this build reads {FORMAT_VERSION}"
             )
 
+        self.revision = int(payload.get("revision", 0))
         self.jobs = {
             job_id: JobRecord(id=job_id, **record)
             for job_id, record in payload.get("jobs", {}).items()
         }
 
     def save(self) -> Path:
+        expected = self.revision if self.path.exists() else None
+        if self.disk_revision() != expected:
+            raise ConcurrentModificationError(
+                f"'{self.path}' changed on disk since it was read — another process "
+                f"started or updated a job. Nothing was written; retry so the change "
+                f"applies on top of theirs."
+            )
+
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
+        next_revision = self.revision + 1
         payload = {
             "format_version": FORMAT_VERSION,
+            "revision": next_revision,
             "jobs": {
                 job_id: {k: v for k, v in asdict(record).items() if k != "id"}
                 for job_id, record in sorted(self.jobs.items())
@@ -106,6 +130,7 @@ class JobStore:
                 json.dump(payload, handle, indent=2)
                 handle.write("\n")
             os.replace(tmp_name, self.path)
+            self.revision = next_revision
         except BaseException:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_name)

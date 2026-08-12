@@ -209,7 +209,8 @@ def main(argv=None) -> int:
     runtime = AdapterRuntime(registry)
     if args.warmup:
         print("Loading backbone …", flush=True)
-        runtime.warmup()
+        for problem in runtime.warmup():
+            print(f"  skipped: {problem}")
         print(f"Resident adapters: {sorted(runtime._resident) or 'none'}")
 
     session = args.session

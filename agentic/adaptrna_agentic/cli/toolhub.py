@@ -99,6 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dtype", default=None, help="auto | float32 | bfloat16 | float16")
     p.set_defaults(func=cmd_config)
 
+    p = sub.add_parser("doctor", help="Check the install and report what is wrong")
+    p.add_argument("--json", action="store_true", help="Machine-readable output")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("prune", help="Delete unreferenced state (dry run unless --yes)")
+    p.add_argument("what", choices=("staging", "sessions", "jobs", "runs", "artifacts"))
+    p.add_argument("--older-than", type=float, default=None, metavar="DAYS")
+    p.add_argument("--yes", action="store_true", help="Actually delete")
+    p.set_defaults(func=cmd_prune)
+
     sub.add_parser("warmup", help="Eagerly load the backbone + active adapters (this process)"
                    ).set_defaults(func=cmd_warmup)
     sub.add_parser("rebuild", help="Drop the resident hub (this process)"
@@ -300,11 +310,34 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from adaptrna_agentic.toolhub import doctor
+
+    report = doctor.run_checks(args.data_dir)
+    print(json.dumps(report, indent=2, default=str) if args.json
+          else doctor.format_report(report))
+
+    return 1 if report["status"] == "fail" else 0
+
+
+def cmd_prune(args) -> int:
+    from adaptrna_agentic.toolhub import prune as prune_module
+
+    report = prune_module.prune(
+        args.what, older_than=args.older_than, apply=args.yes, data_dir=args.data_dir
+    )
+    print(prune_module.format_report(report))
+
+    return 0
+
+
 def cmd_warmup(args) -> int:
     runtime = AdapterRuntime(Registry(args.data_dir))
-    runtime.warmup()
+    problems = runtime.warmup()
     resident = sorted(runtime._resident)
     print(f"Backbone loaded; resident adapters: {resident or 'none'}")
+    for problem in problems:
+        print(f"  skipped: {problem}", file=sys.stderr)
     return 0
 
 

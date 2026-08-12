@@ -111,3 +111,20 @@ def test_smoke_test_fails_on_wrong_expected_values(runtime):
 
     assert report["ok"] is False
     assert any("FAIL" in check for check in report["checks"])
+
+
+def test_warmup_skips_a_broken_tool_instead_of_blocking_startup(runtime, nano_mrl_adapter):
+    """One tool with a missing artifact must not stop a chat from starting; the same
+    error still fires the moment that tool is actually used."""
+    runtime.registry.register(nano_mrl_adapter)
+    runtime.registry.get("mrl").artifact_path().unlink()
+
+    problems = runtime.warmup()
+
+    assert len(problems) == 1 and "mrl" in problems[0]
+    assert runtime.loaded
+    assert "splice_site" in runtime._resident        # the healthy tool is resident
+    assert runtime.predict("splice_site", SEQUENCES[:1])
+
+    with pytest.raises(ToolHubError, match="does not exist"):
+        runtime.predict("mrl", SEQUENCES[:1])

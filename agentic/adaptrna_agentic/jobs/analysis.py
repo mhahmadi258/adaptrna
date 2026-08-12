@@ -69,7 +69,9 @@ def analyze_run(
         return report
 
     knowledge = task_knowledge_or_generic(task)
-    primary = knowledge["primary_metric"]
+    # The plan recorded the primary metric when the run was planned, so a run stays
+    # analysable even if its task can no longer be imported (deleted, renamed, moved).
+    primary = knowledge["primary_metric"] or plan.get("primary_metric")
     if primary is None:
         report["verdict"] = VERDICT_SUSPICIOUS
         report["checks"].append(
@@ -149,7 +151,38 @@ def analyze_run(
                 f"(±{tolerance} for run-to-run non-determinism)"
             )
     elif band is None:
-        report["checks"].append("no in-repo reference for this task yet — nothing to compare")
+        # No validated band for this task (a generated one, say). Compare against this
+        # project's own earlier runs instead — labelled a baseline, never a reference.
+        baseline = previous_best(task, arm, primary, exclude=str(output_dir))
+        if baseline is None:
+            report["checks"].append(
+                f"no reference band and no earlier run of '{task}' ({arm}) — this run is "
+                f"the baseline for future ones"
+            )
+        else:
+            delta = value - baseline["value"] if value is not None else None
+            report["baseline"] = baseline
+            if delta is None:
+                report["checks"].append("no primary metric to compare with the baseline")
+            elif abs(delta) <= tolerance:
+                report["checks"].append(
+                    f"{primary} = {_fmt(value)} matches the baseline "
+                    f"{_fmt(baseline['value'])} from job '{baseline['job_id']}' "
+                    f"(±{tolerance})"
+                )
+            elif delta > 0:
+                report["checks"].append(
+                    f"{primary} = {_fmt(value)} improves on the baseline "
+                    f"{_fmt(baseline['value'])} from job '{baseline['job_id']}' "
+                    f"(+{_fmt(delta)})"
+                )
+            else:
+                warnings.append(
+                    f"{primary} = {_fmt(value)} is below the baseline "
+                    f"{_fmt(baseline['value'])} from job '{baseline['job_id']}' "
+                    f"({_fmt(delta)}). This is a comparison with an earlier run of this "
+                    f"project, not a validated reference."
+                )
 
     report["checks"].extend(f"FAIL: {message}" for message in failures)
     report["checks"].extend(f"WARN: {message}" for message in warnings)
@@ -158,6 +191,54 @@ def analyze_run(
     )
 
     return report
+
+
+# ---------------------------------------------------------------------- baselines
+
+def previous_best(
+    task: str, arm: str, metric: str, exclude: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Best value of `metric` among this project's earlier succeeded runs of task+arm.
+
+    This is what stands in for a reference band on a task the knowledge base has never
+    seen. It is deliberately *this project's own history* — a baseline to beat, not a
+    published number to be judged against.
+    """
+    try:
+        from adaptrna_agentic.jobs.store import JobStore
+
+        store = JobStore()
+    except Exception:  # noqa: BLE001 -- no history is a normal state, not an error
+        return None
+
+    best = None
+    for record in store.list():
+        if record.state != "succeeded" or record.task != task or record.arm != arm:
+            continue
+        if exclude and str(record.output_path) == str(Path(exclude)):
+            continue
+        if record.plan.get("quick_run") or record.plan.get("overrides", {}).get("trainer.max_steps"):
+            continue    # a truncated run is not a baseline
+
+        metrics_file = latest_metrics_file(record.output_path)
+        if metrics_file is None:
+            continue
+
+        import pandas as pd
+
+        try:
+            series = pd.read_csv(metrics_file).get(metric)
+        except (OSError, ValueError):
+            continue
+        if series is None or series.dropna().empty:
+            continue
+
+        value = float(series.dropna().iloc[-1])
+        if best is None or value > best["value"]:
+            best = {"job_id": record.id, "value": round(value, 6),
+                    "finished_at": record.ended_at}
+
+    return best
 
 
 # ---------------------------------------------------------------------- helpers
