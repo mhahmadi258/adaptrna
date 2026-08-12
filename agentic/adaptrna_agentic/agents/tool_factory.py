@@ -10,7 +10,7 @@ activate-first lifecycle.
 """
 
 from dataclasses import asdict
-from typing import Any, List
+from typing import Any, List, Optional
 import functools
 import importlib
 import json
@@ -28,7 +28,19 @@ MANAGEMENT_TOOL_NAMES = (
     "activate_tool",
     "deactivate_tool",
     "test_tool",
+    "profile_dataset",
+    "recommend_training_config",
+    "start_training",
+    "job_status",
+    "list_jobs",
+    "analyze_run",
+    "register_trained_adapter",
 )
+
+#: Consequential operations: they burn GPU hours or add a servable tool, so the graph
+#: routes them through the approval node before the tools node may execute them
+#: (MASTER_PLAN §3.2).
+GATED_TOOLS = ("start_training", "register_trained_adapter")
 
 #: Appended to adapter tool descriptions so the model knows the output type. A future
 #: sec_struct adapter returns L×L matrices — its wrapper should cap and summarize rather
@@ -110,6 +122,98 @@ def _management_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseT
     return [
         StructuredTool.from_function(func=_surface_errors(func), handle_tool_error=True)
         for func in (list_tools, tool_info, activate_tool, deactivate_tool, test_tool)
+    ] + _pipeline_tools(registry, runtime)
+
+
+def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseTool]:
+    """Phase 5: profile data, recommend a config, train, watch, analyse, register."""
+    from adaptrna_agentic.jobs.analysis import analyze_run as _analyze_run
+    from adaptrna_agentic.jobs.runner import JobRunner
+    from adaptrna_agentic.profiling.profiler import profile_dataset as _profile_dataset
+    from adaptrna_agentic.profiling.recommender import recommend as _recommend
+
+    job_runner = JobRunner()
+
+    def profile_dataset(path: str) -> dict:
+        """Describe a dataset: format, sequences, target, and which task can train on it."""
+        return _profile_dataset(path)
+
+    def recommend_training_config(
+        data_path: str,
+        task: Optional[str] = None,
+        arm: str = "lora",
+        quick: bool = False,
+        seed: int = 42,
+        task_options: Optional[dict] = None,
+    ) -> dict:
+        """Propose a validated training plan for a dataset.
+
+        Returns the task, arm, config overrides, the exact command, an ETA, the rationale
+        behind every setting, and any caveats. All values come from the project's
+        knowledge base of validated runs — never invent hyperparameters yourself.
+        """
+        profile = _profile_dataset(data_path)
+        return _recommend(
+            profile, task=task, arm=arm, quick=quick, seed=seed,
+            task_options=task_options, registry=registry,
+        )
+
+    def start_training(plan: dict) -> dict:
+        """Launch a training plan on the local GPU as a background job.
+
+        Pass the plan returned by recommend_training_config. Requires user approval.
+        """
+        record = job_runner.start(plan)
+        return {"job_id": record.id, "state": record.state,
+                "output_dir": record.output_dir,
+                "estimated_wall_clock": plan.get("estimated_wall_clock")}
+
+    def job_status(job_id: str) -> dict:
+        """Progress and state of a training job (epoch, step, latest metrics)."""
+        return job_runner.status(job_id)
+
+    def list_jobs() -> list:
+        """Every training job this project has launched, newest first."""
+        return job_runner.list()
+
+    def analyze_run(job_id: str) -> dict:
+        """Analyse a finished run: metrics, verdict, and remedies for anything wrong."""
+        record = job_runner.store.get(job_id)
+        return _analyze_run(record.output_path, plan=record.plan)
+
+    def register_trained_adapter(
+        job_id: str, name: Optional[str] = None, description: Optional[str] = None,
+    ) -> dict:
+        """Register a finished run's adapter as a servable tool. Requires user approval."""
+        record = job_runner.store.get(job_id)
+        status = job_runner.status(job_id)
+
+        if status["state"] != "succeeded":
+            raise ToolHubError(
+                f"Job '{job_id}' is {status['state']}, not succeeded — nothing to register."
+            )
+        if not record.adapter_path:
+            raise ToolHubError(
+                f"Job '{job_id}' produced no adapter file. LoRA runs write one; full "
+                f"fine-tuning runs do not (and cannot become served tools)."
+            )
+
+        entry = registry.register(record.adapter_path, name=name, description=description)
+        entry.provenance["job_id"] = job_id
+        entry.provenance["training_metrics"] = (status.get("progress") or {}).get(
+            "latest_metrics", {}
+        )
+        registry.manifest.save()
+
+        # A tool registered after the hub was built must become resident on next use.
+        return asdict(entry)
+
+    return [
+        StructuredTool.from_function(func=_surface_errors(func), handle_tool_error=True)
+        for func in (
+            profile_dataset, recommend_training_config, start_training,
+            job_status, list_jobs, analyze_run, register_trained_adapter,
+        )
     ]
 
 

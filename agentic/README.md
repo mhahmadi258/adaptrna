@@ -44,6 +44,32 @@ python -m adaptrna_agentic.cli.chat --list-sessions
 Per-role models default to `anthropic:claude-opus-5`; override with `ADAPTRNA_MODEL`
 (all roles) or `ADAPTRNA_MODEL_ORCHESTRATOR` / `_TOOLSMITH` / `_VERIFIER`.
 
+## Fine-tuning from chat (Phase 5)
+
+Ask for a new adapter and the assistant profiles your data, recommends a validated
+configuration, trains it on the local GPU, analyses the result, and registers it as a
+tool — pausing for your approval before it burns GPU hours or adds a servable tool:
+
+```
+you> My Spliceator data is at ~/data/train_data — what's in it?
+you> Recommend a fine-tuning setup for the acceptor arm.
+you> Run it.                     ← approval gate: shows the exact command, waits for [y/N]
+you> How's it going?             ← the job runs detached; the chat stays responsive
+you> Analyze the run.
+you> Register it as splice_site_acceptor.        ← approval gate
+```
+
+The recommendation is **deterministic**: every hyperparameter comes from
+`adaptrna_agentic/knowledge/*.yaml` (validated settings, their failure modes, reference
+metric bands), and the rationale shown to you is generated from the same entries — the
+model narrates, it never invents a number. Jobs are recorded in `jobs_data/`, run
+artifacts land in `outputs/<run_name>/`, and one training job runs at a time by default.
+
+Two rules the analyzer enforces: a run truncated by `trainer.max_steps` is never compared
+to reference metrics, and a difference inside the task's tolerance is never called a
+regression (FlashAttention's non-deterministic backward gave F1 95.21 vs 95.82 for the
+same command and seed).
+
 ## ToolHub (Phase 2)
 
 Adapters served as tools from one shared backbone. Registry operations are instant;

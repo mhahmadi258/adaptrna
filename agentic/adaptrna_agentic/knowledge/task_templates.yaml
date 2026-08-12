@@ -1,0 +1,74 @@
+# Data profile -> engine task shape.
+#
+# The DataProfiler describes a dataset; this table says which shipped task can train on
+# it, and what that task's shape implies. Phase 6's ToolSmith reuses the same table when
+# it has to GENERATE a task instead of matching one.
+
+templates:
+  - task: splice_site
+    label: Binary sequence classification (CLS token)
+    match:
+      target_type: binary
+      sequence_length: {min: 100, max: 1000}
+      typical_length: 400
+    shape:
+      head: "SpliceSitePredictionHead - linear classifier on the CLS token"
+      loss: binary_cross_entropy_with_logits
+      metrics: [acc, precision, recall, specificity, f1_score]
+      extract_features: "representation[:, 0]  # CLS token"
+      predict_output: "one probability per sequence"
+    data_layout:
+      description: "Spliceator layout: <root>/GS_1/db_N/{Train,Val}_{donor,acceptor}_400.csv
+                    (';'-separated: group;sequence;label) plus a benchmark species
+                    directory for the test split."
+      required_paths: ["GS_1"]
+      key_options:
+        data.ss_type: [donor, acceptor]
+        data.dataset_id: [db_1, db_2, db_3, db_4, db_5, db_6, db_7, db_8, db_9, db_10]
+        data.species: [Danio, Fly, Thaliana, Worm]
+
+  - task: mrl
+    label: Sequence regression with a fitted target scaler
+    match:
+      target_type: continuous
+      sequence_length: {min: 20, max: 120}
+      typical_length: 50
+    shape:
+      head: "RibosomeLoadingPredictionHead - 1D ResNet over the sequence, pooled"
+      loss: mse (on standardised targets)
+      metrics: [r2, mse, mae]
+      extract_features: "zero padded positions, pass (representation, pad_mask)"
+      predict_output: "one predicted mean ribosome load per sequence, original scale"
+    data_layout:
+      description: "A gzipped CSV named GSM4084997_varying_length_25to100.csv.gz in
+                    <root>, with columns utr, rl, set (random|human) and total_reads."
+      required_paths: ["GSM4084997_varying_length_25to100.csv.gz"]
+      key_options:
+        data.val_split: [random7600, holdout]
+
+  - task: sec_struct
+    label: Per-pair binary classification (base-pairing matrix)
+    match:
+      target_type: structure
+      sequence_length: {min: 20, max: 5000}
+    shape:
+      head: "SecStructPredictionHead - outer concat + 2D ResNet, O(L^2)"
+      loss: "binary_cross_entropy_with_logits over the upper triangle"
+      metrics: [precision, recall, f1]
+      extract_features: "representation[..., 1:-1, :]  # drop CLS and EOS"
+      predict_output: "one base-pairing matrix per sequence"
+    data_layout:
+      description: "<root>/bpRNA/{train,valid,test} or <root>/archiveII/<family>/... of
+                    .ct / .bpseq structure files."
+      required_paths: ["bpRNA"]
+      key_options:
+        data.dataset: [bpRNA, archiveII_5s, archiveII_16s, archiveII_23s, archiveII_grp1,
+                       archiveII_srp, archiveII_telomerase, archiveII_RNaseP,
+                       archiveII_tmRNA, archiveII_tRNA]
+
+# What to tell the user when nothing matches: the profile is described, the nearest
+# template is named, and the honest conclusion is that a new datamodule is needed.
+no_match_guidance: |
+  No shipped task reads this layout. The data shape itself may still be trainable: adding
+  a new task takes three files (task module, datamodule, config) and no changes to the
+  framework - that is the "new task type" flow, which this build does not yet automate.

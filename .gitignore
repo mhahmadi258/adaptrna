@@ -14,5 +14,6 @@ outputs/
 adapters/
 toolhub_data/
 chat_data/
+jobs_data/
 *.pt
 *.ckpt

@@ -14,13 +14,14 @@ changes made outside this process are picked up at the next turn.
 
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Any, List, Optional
 import argparse
 import dataclasses
 import os
 import sqlite3
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 
 from adaptrna_agentic.agents.orchestrator import build_orchestrator_graph
 from adaptrna_agentic.models import build_chat_model
@@ -93,19 +94,68 @@ def _print_progress(messages: List[BaseMessage], seen: int) -> int:
     return len(messages)
 
 
+def _pending_interrupt(graph, config):
+    """The approval request the graph is suspended on, if any."""
+    snapshot = graph.get_state(config)
+    for task in snapshot.tasks:
+        for item in task.interrupts:
+            return item.value
+
+    return None
+
+
+def _prompt_approval(request) -> dict:
+    """Show exactly what would happen, then ask. This is the human gate."""
+    print()
+    print("  ┌─ approval required " + "─" * 46)
+    for item in request.get("requests", []):
+        print(f"  │ {item['summary']}")
+        details = item.get("details") or {}
+        if details.get("command"):
+            print(f"  │   would run: {' '.join(details['command'])}")
+        if details.get("output_dir"):
+            print(f"  │   output:    {details['output_dir']}")
+        if details.get("downloads"):
+            print(f"  │   note:      {details['downloads']}")
+        for warning in details.get("warnings") or []:
+            print(f"  │   ! {warning}")
+    print("  └" + "─" * 66)
+
+    try:
+        reply = input("  approve? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        reply = ""
+
+    if reply in ("y", "yes"):
+        return {"approved": True}
+
+    return {"approved": False, "note": "the user declined at the approval prompt"}
+
+
 def run_turn(graph, config, user_text: str) -> str:
-    """One user turn. History lives in the checkpointer: only the new message is sent."""
-    seen = None
+    """One user turn. History lives in the checkpointer: only the new message is sent.
+
+    A turn may suspend at an approval gate; we render the request, ask, and resume.
+    """
+    payload: Any = {"messages": [HumanMessage(content=user_text)]}
+    seen: Optional[int] = None
     final: List[BaseMessage] = []
 
-    for state in graph.stream(
-        {"messages": [HumanMessage(content=user_text)]}, config, stream_mode="values"
-    ):
-        final = state["messages"]
-        if seen is None:
-            seen = len(final)          # checkpointed history + the new human message
-        else:
-            seen = _print_progress(final, seen)
+    while True:
+        for state in graph.stream(payload, config, stream_mode="values"):
+            final = state["messages"]
+            if seen is None:
+                seen = len(final)      # checkpointed history + the new human message
+            else:
+                seen = _print_progress(final, seen)
+
+        request = _pending_interrupt(graph, config)
+        if request is None:
+            break
+
+        payload = Command(resume=_prompt_approval(request))
+        seen = len(final)
 
     answer = _message_text(final[-1])
     print(answer)

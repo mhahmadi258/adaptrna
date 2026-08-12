@@ -1,18 +1,27 @@
 """The AdaptRNA orchestrator — the one agent the user talks to (MASTER_PLAN §5).
 
-Same hand-built wiring as the Phase 0 hello graph (model ⇄ tools loop), with the ToolHub
-bound as agent tools and an optional checkpointer for persistent sessions. Tools are
-rebuilt at every model call from the shared Registry/Runtime, so lifecycle changes are
-honored immediately; the tools node executes dynamically for the same reason.
+Hand-built wiring (model ⇄ tools loop) with the ToolHub bound as agent tools, an optional
+checkpointer for persistent sessions, and — from Phase 5 — a human approval gate in front
+of consequential operations.
+
+The gate is a **dedicated node**, not an `interrupt()` inside a tool. The tools node runs
+every tool call of a turn in one pass, so interrupting from within it would re-execute the
+calls that already completed when the turn resumes. A node containing only `interrupt()`
+is idempotent: on resume it returns the decision instead of raising.
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.types import interrupt
 
-from adaptrna_agentic.agents.tool_factory import build_agent_tools, stringify_tool_output
+from adaptrna_agentic.agents.tool_factory import (
+    GATED_TOOLS,
+    build_agent_tools,
+    stringify_tool_output,
+)
 from adaptrna_agentic.toolhub.registry import Registry
 from adaptrna_agentic.toolhub.runtime import AdapterRuntime
 
@@ -28,8 +37,65 @@ activate_tool before using it. Use list_tools / tool_info / test_tool when the u
 about capabilities, and activate_tool / deactivate_tool when they want tools switched on
 or off.
 
+You can also build new tools by fine-tuning the backbone: profile_dataset describes a
+dataset, recommend_training_config proposes a validated configuration, start_training
+launches it, job_status follows it, analyze_run judges the result, and
+register_trained_adapter turns a finished run into a servable tool.
+
+Never invent hyperparameters. The recommended configuration comes from a knowledge base
+of validated runs, together with the reasons behind each setting — present those reasons
+rather than your own. start_training and register_trained_adapter pause for the user's
+approval; if the user declines, say so plainly and do not retry the same action.
+
+Training runs in the background: after starting one, tell the user how long it should
+take and let them keep working. When analysing a run, report the verdict and its reasons
+as given — in particular, never present a truncated smoke run as a real result.
+
 Sequences arrive as plain ACGU/T strings. Keep answers concise and grounded in the tool
 results you actually received."""
+
+
+class OrchestratorState(MessagesState):
+    """Messages plus the human decisions recorded for this turn's gated tool calls."""
+
+    approvals: Dict[str, Any]
+
+
+def _summarize(call: Dict[str, Any]) -> str:
+    """One line describing what approving this call would actually do."""
+    name, args = call["name"], call.get("args", {})
+
+    if name == "start_training":
+        plan = args.get("plan") or {}
+        return (
+            f"Train {plan.get('task', '?')} ({plan.get('arm', '?')}) — "
+            f"ETA {plan.get('estimated_wall_clock', 'unknown')}, "
+            f"output {plan.get('output_dir', '?')}"
+        )
+    if name == "register_trained_adapter":
+        return (
+            f"Register job '{args.get('job_id', '?')}' as the servable tool "
+            f"'{args.get('name') or 'its task name'}'"
+        )
+
+    return f"{name}({args})"
+
+
+def _details(call: Dict[str, Any]) -> Dict[str, Any]:
+    """Everything the human should see before approving — notably the exact command."""
+    args = call.get("args", {})
+    details: Dict[str, Any] = {}
+
+    if call["name"] == "start_training":
+        plan = args.get("plan") or {}
+        details["command"] = plan.get("command")
+        details["output_dir"] = plan.get("output_dir")
+        details["estimated_wall_clock"] = plan.get("estimated_wall_clock")
+        details["warnings"] = plan.get("warnings")
+        if plan.get("overrides", {}).get("data.prepare"):
+            details["downloads"] = "Dataset download required (MRL is ~431 MB)."
+
+    return details
 
 
 def build_orchestrator_graph(
@@ -44,13 +110,13 @@ def build_orchestrator_graph(
     All arguments are injectable (the test seams). Defaults: the configured orchestrator
     model (resolved lazily, so compiling needs no API key), the default-data-dir
     Registry, and its AdapterRuntime. Pass a LangGraph checkpointer for persistent
-    sessions (invoke with `config={"configurable": {"thread_id": ...}}`).
+    sessions and for the approval gate, which needs to suspend and resume.
     """
     registry = registry or Registry()
     runtime = runtime or AdapterRuntime(registry)
     injected_model = model
 
-    def call_model(state: MessagesState):
+    def call_model(state: OrchestratorState):
         nonlocal injected_model
         if injected_model is None:
             from adaptrna_agentic.models import build_chat_model
@@ -58,7 +124,7 @@ def build_orchestrator_graph(
             injected_model = build_chat_model("orchestrator")
 
         # Rebuilt every call: descriptions reflect current tool states, and tools
-        # registered/toggled since the last turn are picked up.
+        # registered or toggled since the last turn are picked up.
         bound = injected_model.bind_tools(build_agent_tools(registry, runtime))
 
         messages = state["messages"]
@@ -67,21 +133,58 @@ def build_orchestrator_graph(
 
         return {"messages": [bound.invoke(messages)]}
 
-    def run_tools(state: MessagesState):
+    def request_approval(state: OrchestratorState):
+        """The gate. Contains ONLY the interrupt, so resuming re-runs nothing else."""
+        approvals = dict(state.get("approvals") or {})
+        pending = [
+            call for call in state["messages"][-1].tool_calls
+            if call["name"] in GATED_TOOLS and call["id"] not in approvals
+        ]
+
+        decisions = interrupt({
+            "type": "approval_request",
+            "requests": [
+                {"id": call["id"], "tool": call["name"], "args": call.get("args", {}),
+                 "summary": _summarize(call), "details": _details(call)}
+                for call in pending
+            ],
+        })
+
+        # Accept either one decision for everything, or a per-call-id mapping.
+        normalized = {}
+        for call in pending:
+            decision = decisions.get(call["id"], decisions) if isinstance(decisions, dict) else decisions
+            if isinstance(decision, bool):
+                decision = {"approved": decision}
+            elif isinstance(decision, str):
+                decision = {"approved": decision.strip().lower() in ("y", "yes", "approve", "true")}
+            normalized[call["id"]] = decision
+
+        return {"approvals": {**approvals, **normalized}}
+
+    def run_tools(state: OrchestratorState):
         tools = {tool.name: tool for tool in build_agent_tools(registry, runtime)}
+        approvals = state.get("approvals") or {}
         last = state["messages"][-1]
 
         results = []
         for call in last.tool_calls:
-            tool = tools.get(call["name"])
-            if tool is None:
+            decision = approvals.get(call["id"])
+
+            if call["name"] in GATED_TOOLS and not (decision or {}).get("approved"):
+                note = (decision or {}).get("note") or "no reason given"
+                output = (
+                    f"The user declined to run '{call['name']}' ({note}). "
+                    f"Do not retry it; ask what they would like instead."
+                )
+            elif call["name"] not in tools:
                 output = f"Unknown tool '{call['name']}'. Use list_tools to see what exists."
             else:
                 try:
                     # handle_tool_error=True turns ToolExceptions (refusals, validation)
                     # into result strings; anything else is caught here so one bad call
                     # never kills the turn.
-                    output = tool.invoke(call["args"])
+                    output = tools[call["name"]].invoke(call["args"])
                 except Exception as exc:  # noqa: BLE001
                     output = f"Tool '{call['name']}' failed: {exc}"
 
@@ -91,17 +194,32 @@ def build_orchestrator_graph(
                 name=call["name"],
             ))
 
-        return {"messages": results}
+        # Decisions are per turn: clear them so a later call of the same gated tool asks
+        # again rather than inheriting an earlier "yes".
+        return {"messages": results, "approvals": {}}
 
-    def route_after_model(state: MessagesState):
+    def route_after_model(state: OrchestratorState):
         last = state["messages"][-1]
-        return "tools" if getattr(last, "tool_calls", None) else END
+        calls = getattr(last, "tool_calls", None)
+        if not calls:
+            return END
 
-    graph = StateGraph(MessagesState)
+        approvals = state.get("approvals") or {}
+        if any(c["name"] in GATED_TOOLS and c["id"] not in approvals for c in calls):
+            return "approval"
+
+        return "tools"
+
+    graph = StateGraph(OrchestratorState)
     graph.add_node("model", call_model)
+    graph.add_node("approval", request_approval)
     graph.add_node("tools", run_tools)
     graph.add_edge(START, "model")
-    graph.add_conditional_edges("model", route_after_model, {"tools": "tools", END: END})
+    graph.add_conditional_edges(
+        "model", route_after_model,
+        {"tools": "tools", "approval": "approval", END: END},
+    )
+    graph.add_edge("approval", "tools")
     graph.add_edge("tools", "model")
 
     return graph.compile(checkpointer=checkpointer)
