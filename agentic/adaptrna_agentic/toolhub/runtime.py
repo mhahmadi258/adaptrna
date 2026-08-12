@@ -10,6 +10,7 @@ Engine imports live inside functions so importing this module stays torch-free.
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Union
+import threading
 import math
 
 from adaptrna_agentic.toolhub.manifest import ToolEntry, resolve_path
@@ -21,6 +22,12 @@ class AdapterRuntime:
         self.registry = registry
         self._hub = None
         self._resident: set = set()
+        # Serialises inference on the shared backbone. `RiNALMoHub.predict` calls
+        # `activate()`, which flips the active adapter on *every* tuner layer, so two
+        # concurrent predictions for different adapters could interleave that mutation
+        # and silently answer from the wrong one. The lock lives here rather than at
+        # the call sites so every caller — CLI, chat tools, HTTP — is covered.
+        self.inference_lock = threading.RLock()
 
     @property
     def loaded(self) -> bool:
@@ -151,15 +158,21 @@ class AdapterRuntime:
         sequences: Union[str, Sequence[str]],
         batch_size: Optional[int] = None,
     ):
-        """Run `name` over `sequences`, returning the task's native output type."""
-        entry = self._ensure_tool(name)
+        """Run `name` over `sequences`, returning the task's native output type.
 
-        if isinstance(sequences, str):
-            sequences = [sequences]
+        Serialised: the hub activates this tool's adapter across the whole backbone
+        before running, so overlapping calls for different tools would answer from
+        whichever adapter was activated last.
+        """
+        with self.inference_lock:
+            entry = self._ensure_tool(name)
 
-        # Per-tool serving policy; None falls through to the task's own default.
-        effective_batch = batch_size or entry.serving.get("batch_size")
-        return self._hub.predict(name, list(sequences), batch_size=effective_batch)
+            if isinstance(sequences, str):
+                sequences = [sequences]
+
+            # Per-tool serving policy; None falls through to the task's own default.
+            effective_batch = batch_size or entry.serving.get("batch_size")
+            return self._hub.predict(name, list(sequences), batch_size=effective_batch)
 
     # ------------------------------------------------------------------ smoke test
 

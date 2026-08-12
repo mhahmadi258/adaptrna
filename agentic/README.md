@@ -141,6 +141,39 @@ Wrapped packages (e.g. `ViennaRNA`) are *tool* dependencies: installed into the 
 the gated flow, recorded in the manifest provenance, and deliberately absent from any
 `pyproject.toml`.
 
+## HTTP service (Phase 8)
+
+The same platform, over HTTP — so a browser can drive it and a session started in the
+terminal continues in the browser (and back).
+
+```bash
+python -m adaptrna_agentic.cli.serve                 # 127.0.0.1:8000
+python -m adaptrna_agentic.cli.serve --port 8077 --warmup
+ADAPTRNA_API_TOKEN=secret python -m adaptrna_agentic.cli.serve --host 0.0.0.0
+```
+
+It binds loopback by default and **refuses to start** on any other address without a
+token: this API can start GPU jobs and write code into the repository. Interactive docs
+at `/docs`.
+
+| | |
+|---|---|
+| `GET /health`, `GET /api/doctor` | liveness; the full Phase 7 report |
+| `GET/POST /api/tools/...` | list, info, activate/deactivate, test, predict, call |
+| `GET /api/jobs/...` | list, status, logs, analysis; `POST .../cancel` |
+| `POST /api/sessions/{id}/messages` | one turn, streamed as SSE |
+| `POST /api/sessions/{id}/resume` | answer a pending approval; the turn continues |
+
+Turns stream `text` (token by token), `tool_call`, `tool_result`, then `done`. When the
+agent reaches an approval gate the stream emits `approval_required` — carrying the exact
+command or file list — and **ends**; the client decides and calls `/resume`, which returns
+a new stream continuing the same turn. A gate can wait minutes for a human, and a
+suspended turn survives in the checkpointer where a held-open connection would not.
+
+Adapter inference is serialised inside `AdapterRuntime`: the engine's hub activates an
+adapter across the whole backbone before predicting, so overlapping requests for different
+tools would otherwise answer from the wrong one.
+
 ## Tests (no network, no API key)
 
 ```bash

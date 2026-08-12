@@ -1,1 +1,1 @@
-"""FastAPI service over the orchestrator graph and ToolHub. Filled in Phase 8."""
+"""FastAPI service over the orchestrator graph and ToolHub (Phase 8)."""

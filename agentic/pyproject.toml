@@ -14,6 +14,8 @@ dependencies = [
     "langchain>=1.0",
     "langchain-anthropic",
     "python-dotenv",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
 ]
 
 # Deliberately absent: any dependency on the engine (rinalmo / rinalmo_hub), torch or
@@ -27,6 +29,7 @@ packages = [
     "adaptrna_agentic",
     "adaptrna_agentic.agents",
     "adaptrna_agentic.api",
+    "adaptrna_agentic.api.routers",
     "adaptrna_agentic.cli",
     "adaptrna_agentic.jobs",
     "adaptrna_agentic.knowledge",
