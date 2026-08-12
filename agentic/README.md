@@ -55,6 +55,23 @@ Adapter tools are LoRA-only (a full-FT export would pair its head with the pretr
 backbone). Serving runs fp32 (`dtype: auto`): non-autocast bf16 inference trips a dtype
 promotion inside the engine's TokenDropout — see MASTER_PLAN §7.
 
+## External tools (Phase 3)
+
+Classical packages wrapped as typed functions, sharing the same manifest and lifecycle.
+The wrapper contract lives in `toolhub/external/contract.py`; `toolhub/external/vienna.py`
+(ViennaRNA) is the hand-written reference — and the template Phase 6's ToolSmith imitates.
+
+```bash
+# install is approval-gated: the exact pip command is shown; confirm or pass --yes
+python -m adaptrna_agentic.cli.toolhub register-external adaptrna_agentic.toolhub.external.vienna
+python -m adaptrna_agentic.cli.toolhub call vienna_fold sequence=GGGGAAAACCCC
+python -m adaptrna_agentic.cli.toolhub test vienna_fold      # golden-pair tests
+```
+
+Wrapped packages (e.g. `ViennaRNA`) are *tool* dependencies: installed into the venv via
+the gated flow, recorded in the manifest provenance, and deliberately absent from any
+`pyproject.toml`.
+
 ## Tests (no network, no API key)
 
 ```bash

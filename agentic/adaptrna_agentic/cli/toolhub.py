@@ -47,6 +47,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Reference the file in place instead of copying it into toolhub_data/")
     p.set_defaults(func=cmd_register)
 
+    p = sub.add_parser("register-external",
+                       help="Register an external wrapper module's functions as tools")
+    p.add_argument("module",
+                   help="Import path, e.g. adaptrna_agentic.toolhub.external.vienna")
+    p.add_argument("--only", default=None,
+                   help="Comma-separated subset of the module's functions")
+    p.add_argument("--yes", action="store_true",
+                   help="Approve the package install without prompting")
+    p.set_defaults(func=cmd_register_external)
+
+    p = sub.add_parser("call", help="Invoke an external tool function")
+    p.add_argument("name")
+    p.add_argument("kv", nargs="*", metavar="KEY=VALUE",
+                   help="Function arguments, e.g. sequence=GGGGAAAACCCC")
+    p.add_argument("--args", default=None, help="Arguments as a JSON object")
+    p.set_defaults(func=cmd_call)
+
     for verb in ("activate", "deactivate"):
         p = sub.add_parser(verb, help=f"{verb.capitalize()} a tool")
         p.add_argument("name")
@@ -101,9 +118,9 @@ def cmd_list(args) -> int:
     rows = [("NAME", "STATE", "TYPE", "TASK", "BATCH", "SOURCE")]
     for e in entries:
         batch = e.serving.get("batch_size")
-        rows.append((e.name, e.state, e.type, e.task,
-                     str(batch) if batch else "task default",
-                     e.provenance.get("source", e.artifact)))
+        batch_label = str(batch) if batch else ("task default" if e.type == "adapter" else "-")
+        rows.append((e.name, e.state, e.type, e.task or "-", batch_label,
+                     e.provenance.get("source", e.artifact or "-")))
 
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
     for row in rows:
@@ -158,20 +175,92 @@ def cmd_remove(args) -> int:
     return 0
 
 
+def cmd_register_external(args) -> int:
+    from adaptrna_agentic.toolhub.external import contract
+
+    spec, _module = contract.load_spec(args.module)
+
+    if not contract.is_available(spec.package):
+        command = " ".join(contract.install_command(spec.package))
+        print(f"Package '{spec.package.pip}' (import '{spec.package.import_name}') "
+              f"is not installed.")
+        print(f"Would run: {command}")
+
+        if args.yes:
+            approved = True
+        elif sys.stdin.isatty():
+            approved = input("Proceed with the install? [y/N] ").strip().lower() in ("y", "yes")
+        else:
+            approved = False
+
+        if not approved:
+            raise ToolHubError(
+                f"Install not approved. Install it yourself with `{command}`, "
+                f"or rerun with --yes."
+            )
+
+        version = contract.install(spec.package)
+        print(f"Installed {spec.package.pip} {version}")
+
+    only = [part.strip() for part in args.only.split(",")] if args.only else None
+    entries = Registry(args.data_dir).register_external(args.module, only=only)
+    for entry in entries:
+        print(f"Registered '{entry.name}' — {entry.description}")
+    return 0
+
+
+def cmd_call(args) -> int:
+    registry = Registry(args.data_dir)
+    entry = registry.get(args.name)
+
+    if entry.type != "external":
+        raise ToolHubError(
+            f"'{args.name}' is an {entry.type} tool; use `toolhub predict {args.name} ...`."
+        )
+    if not entry.active:
+        raise ToolHubError(
+            f"Tool '{args.name}' is disabled. Enable it with `toolhub activate {args.name}`."
+        )
+
+    arguments = {}
+    if args.args:
+        arguments.update(json.loads(args.args))
+    for pair in args.kv:
+        if "=" not in pair:
+            raise ToolHubError(f"Expected KEY=VALUE, got '{pair}'")
+        key, _, value = pair.partition("=")
+        arguments[key] = value
+
+    from adaptrna_agentic.toolhub.external.contract import call_entry
+
+    result = call_entry(entry, arguments)
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
 def cmd_info(args) -> int:
     entry = Registry(args.data_dir).get(args.name)
     print(json.dumps(asdict(entry), indent=2))
 
-    from rinalmo_hub.adapter import describe_adapter
+    if entry.type == "adapter":
+        from rinalmo_hub.adapter import describe_adapter
 
-    print()
-    print(describe_adapter(entry.artifact_path()))
+        print()
+        print(describe_adapter(entry.artifact_path()))
     return 0
 
 
 def cmd_test(args) -> int:
-    runtime = AdapterRuntime(Registry(args.data_dir))
-    report = runtime.smoke_test(args.name)
+    registry = Registry(args.data_dir)
+    entry = registry.get(args.name)
+
+    if entry.type == "external":
+        from adaptrna_agentic.toolhub.external.contract import run_golden
+
+        report = run_golden(entry)
+    else:
+        report = AdapterRuntime(registry).smoke_test(args.name)
+
     print(json.dumps(report, indent=2, default=str))
     return 0 if report["ok"] else 1
 

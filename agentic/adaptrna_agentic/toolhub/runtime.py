@@ -83,7 +83,7 @@ class AdapterRuntime:
         if entry.type != "adapter":
             raise ToolHubError(
                 f"Tool '{name}' is of type '{entry.type}'; only adapter tools run on the "
-                f"backbone runtime."
+                f"backbone runtime. Use `toolhub call {name} ...` for external tools."
             )
         if not entry.active:
             raise ToolHubError(

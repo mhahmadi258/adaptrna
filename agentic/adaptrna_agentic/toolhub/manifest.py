@@ -82,22 +82,27 @@ class BackboneConfig:
 @dataclass
 class ToolEntry:
     name: str
-    type: str                       # "adapter" (Phase 3 adds "external")
+    type: str                       # "adapter" | "external"
     state: str                      # active | disabled
     description: str
-    task: str
-    lm_config: str
-    artifact: str
+    # Adapter-only fields (None for external tools) — a Phase 3 additive change; v1
+    # manifests written before it load unchanged (missing keys take these defaults).
+    task: Optional[str] = None
+    lm_config: Optional[str] = None
+    artifact: Optional[str] = None
     serving: Dict[str, Any] = field(default_factory=lambda: {"batch_size": None})
     test: Dict[str, Any] = field(default_factory=lambda: {"sequences": [], "expected": None})
     provenance: Dict[str, Any] = field(default_factory=dict)
+    #: External-only: {"module": ..., "function": ..., "package": {pip, import_name,
+    #: installed_version}}.
+    external: Optional[Dict[str, Any]] = None
 
     @property
     def active(self) -> bool:
         return self.state == "active"
 
-    def artifact_path(self) -> Path:
-        return resolve_path(self.artifact)
+    def artifact_path(self) -> Optional[Path]:
+        return resolve_path(self.artifact) if self.artifact else None
 
 
 @dataclass

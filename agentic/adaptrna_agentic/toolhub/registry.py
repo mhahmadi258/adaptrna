@@ -31,9 +31,9 @@ DEFAULT_TEST_SEQUENCES = [
 
 _NULL_STRINGS = ("null", "none", "")
 
-
-class ToolHubError(RuntimeError):
-    """Anything the ToolHub refuses to do, with the reason and the fix in the message."""
+# Re-exported here for backward compatibility; the class lives in errors.py so the
+# external-tool contract module can share it without an import cycle.
+from adaptrna_agentic.toolhub.errors import ToolHubError  # noqa: E402, F401
 
 
 def _engine_load_adapter(path: Path) -> Dict[str, Any]:
@@ -158,6 +158,87 @@ class Registry:
         self.manifest.save()
         return entry
 
+    def register_external(
+        self,
+        module_path: str,
+        *,
+        only: Optional[Sequence[str]] = None,
+    ) -> List[ToolEntry]:
+        """Register every function of an external wrapper module (or the `only` subset)
+        as one tool entry each, named `<family>_<function>`.
+
+        The wrapped package must already be importable — the CLI owns the approval-gated
+        install; this method only refuses with the exact command when it is missing.
+        """
+        from adaptrna_agentic.toolhub.external import contract
+
+        spec, _module = contract.load_spec(module_path)
+
+        if not contract.is_available(spec.package):
+            command = " ".join(contract.install_command(spec.package))
+            raise ToolHubError(
+                f"Package '{spec.package.pip}' (import '{spec.package.import_name}') is "
+                f"not installed. Install it with `{command}`, or rerun "
+                f"`toolhub register-external {module_path} --yes` for the gated install."
+            )
+
+        available = {fn.name: fn for fn in spec.functions}
+        if only is not None:
+            unknown = sorted(set(only) - set(available))
+            if unknown:
+                raise ToolHubError(
+                    f"Unknown function(s) {unknown} in '{module_path}'. "
+                    f"Available: {sorted(available)}"
+                )
+            selected = [available[name] for name in only]
+        else:
+            selected = list(spec.functions)
+
+        # Refuse the whole batch before writing anything.
+        for function in selected:
+            tool_name = f"{spec.name}_{function.name}"
+            if tool_name in self.manifest.tools:
+                raise ToolHubError(
+                    f"'{tool_name}' is already registered. Remove it first "
+                    f"(`toolhub remove {tool_name}`)."
+                )
+
+        version = contract.installed_version(spec.package)
+        registered_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        entries = []
+        for function in selected:
+            entry = ToolEntry(
+                name=f"{spec.name}_{function.name}",
+                type="external",
+                state="active",
+                description=function.description,
+                serving={},
+                # Golden cases are copied in, so the manifest entry is self-contained
+                # even if the wrapper module's SPEC changes later.
+                test={"golden": contract.golden_as_dicts(function)},
+                external={
+                    "module": module_path,
+                    "function": function.name,
+                    "package": {
+                        "pip": spec.package.pip,
+                        "import_name": spec.package.import_name,
+                        "installed_version": version,
+                    },
+                },
+                provenance={
+                    "source": module_path,
+                    "registered_at": registered_at,
+                    "family": spec.name,
+                    "family_description": spec.description,
+                },
+            )
+            self.manifest.tools[entry.name] = entry
+            entries.append(entry)
+
+        self.manifest.save()
+        return entries
+
     def activate(self, name: str) -> ToolEntry:
         return self._set_state(name, "active")
 
@@ -177,8 +258,14 @@ class Registry:
         del self.manifest.tools[name]
         self.manifest.save()
 
-        # Only delete copies the registry owns; a --link'ed source is never touched.
-        if not keep_artifact and self._owns(artifact) and artifact.exists():
+        # Only delete copies the registry owns; a --link'ed source is never touched, and
+        # external tools have no artifact at all.
+        if (
+            not keep_artifact
+            and artifact is not None
+            and self._owns(artifact)
+            and artifact.exists()
+        ):
             artifact.unlink()
 
     def _owns(self, path: Path) -> bool:
