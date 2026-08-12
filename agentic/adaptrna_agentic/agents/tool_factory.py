@@ -35,12 +35,16 @@ MANAGEMENT_TOOL_NAMES = (
     "list_jobs",
     "analyze_run",
     "register_trained_adapter",
+    "create_task_tool",
+    "create_external_tool",
+    "list_staged_code",
+    "land_generated_code",
 )
 
-#: Consequential operations: they burn GPU hours or add a servable tool, so the graph
-#: routes them through the approval node before the tools node may execute them
-#: (MASTER_PLAN §3.2).
-GATED_TOOLS = ("start_training", "register_trained_adapter")
+#: Consequential operations: they burn GPU hours, write code into the repository, or add
+#: a servable tool — so the graph routes them through the approval node before the tools
+#: node may execute them (MASTER_PLAN §3.2).
+GATED_TOOLS = ("start_training", "register_trained_adapter", "land_generated_code")
 
 #: Appended to adapter tool descriptions so the model knows the output type. A future
 #: sec_struct adapter returns L×L matrices — its wrapper should cap and summarize rather
@@ -161,8 +165,19 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
     def start_training(plan: dict) -> dict:
         """Launch a training plan on the local GPU as a background job.
 
-        Pass the plan returned by recommend_training_config. Requires user approval.
+        Pass the plan object returned by recommend_training_config unchanged. Requires
+        user approval.
         """
+        from adaptrna_agentic.profiling.recommender import PLAN_SOURCE
+
+        if plan.get("source") != PLAN_SOURCE:
+            raise ToolHubError(
+                "This plan did not come from recommend_training_config. Hyperparameters "
+                "must come from the project's knowledge base of validated runs, not from "
+                "you — call recommend_training_config and pass its result through "
+                "unchanged. If it refused, report why rather than assembling a plan."
+            )
+
         record = job_runner.start(plan)
         return {"job_id": record.id, "state": record.state,
                 "output_dir": record.output_dir,
@@ -214,7 +229,94 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
             profile_dataset, recommend_training_config, start_training,
             job_status, list_jobs, analyze_run, register_trained_adapter,
         )
+    ] + _codegen_tools(registry, runtime)
+
+
+#: Staged artifacts awaiting approval, keyed by stage id. Held in the chat process only:
+#: a stage that is never landed leaves nothing behind but a temp directory.
+_STAGES: dict = {}
+
+
+def _codegen_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseTool]:
+    """Phase 6: write, verify and land new tasks and external wrappers."""
+    from adaptrna_agentic.codegen import pipeline, staging
+
+    def create_task_tool(name: str, description: str, data_path: str) -> dict:
+        """Build a NEW engine task for data no existing task can read.
+
+        Writes the three files (task module, datamodule, config), verifies them against a
+        real forward/backward pass and an adapter round trip, and has them reviewed. The
+        code is only staged — call land_generated_code to write it into the project.
+        """
+        from adaptrna_agentic.profiling.profiler import profile_dataset as _profile
+
+        profile = _profile(data_path)
+        result = pipeline.create_task(name, description, profile)
+        if result.stage is not None:
+            _STAGES[result.stage.id] = result.stage
+
+        return result.to_dict()
+
+    def create_external_tool(name: str, package: str, description: str) -> dict:
+        """Build a wrapper around a classical bioinformatics package.
+
+        Verifies it against the wrapper contract and its own golden cases. Staged only —
+        call land_generated_code to write it into the project.
+        """
+        result = pipeline.create_external_tool(name, package, description)
+        if result.stage is not None:
+            _STAGES[result.stage.id] = result.stage
+
+        return result.to_dict()
+
+    def list_staged_code() -> list:
+        """Generated code waiting for approval, including from earlier sessions."""
+        return [
+            {"stage_id": s.id, "kind": s.kind, "name": s.name,
+             "files": s.summary(), "staging_path": str(s.package_dir)}
+            for s in staging.list_stages()
+        ]
+
+    def land_generated_code(stage_id: str) -> dict:
+        """Write staged, verified code into the project. Requires user approval."""
+        stage = _STAGES.get(stage_id) or staging.load_stage(stage_id)
+        if stage is None:
+            raise ToolHubError(
+                f"No staged artifact '{stage_id}'. Use list_staged_code to see what is "
+                f"awaiting approval."
+            )
+
+        written = staging.land(stage)
+        _STAGES.pop(stage_id, None)
+
+        return {
+            "landed": written,
+            "name": stage.name,
+            "kind": stage.kind,
+            "module": stage.module_path,
+            "next": (
+                "The task is registered on next use — recommend_training_config can now "
+                "target it." if stage.kind == "task"
+                else "Register its functions as tools with the external-tool flow."
+            ),
+        }
+
+    return [
+        StructuredTool.from_function(func=_surface_errors(func), handle_tool_error=True)
+        for func in (create_task_tool, create_external_tool, list_staged_code,
+                     land_generated_code)
     ]
+
+
+def staged(stage_id: str):
+    """The staged artifact behind a stage id (used by the approval gate to show a diff).
+
+    Falls back to disk: staging directories outlive the session that created them, so a
+    user can review the code in an editor and approve it later.
+    """
+    from adaptrna_agentic.codegen import staging
+
+    return _STAGES.get(stage_id) or staging.load_stage(stage_id)
 
 
 # ---------------------------------------------------------------------- capability tools

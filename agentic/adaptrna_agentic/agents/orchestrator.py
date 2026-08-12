@@ -77,6 +77,14 @@ def _summarize(call: Dict[str, Any]) -> str:
             f"Register job '{args.get('job_id', '?')}' as the servable tool "
             f"'{args.get('name') or 'its task name'}'"
         )
+    if name == "land_generated_code":
+        from adaptrna_agentic.agents.tool_factory import staged
+
+        stage = staged(args.get("stage_id", ""))
+        if stage is None:
+            return f"Write staged code '{args.get('stage_id', '?')}' into the project"
+        files = ", ".join(f["path"] for f in stage.summary())
+        return f"Write generated {stage.kind} '{stage.name}' into the project: {files}"
 
     return f"{name}({args})"
 
@@ -94,6 +102,15 @@ def _details(call: Dict[str, Any]) -> Dict[str, Any]:
         details["warnings"] = plan.get("warnings")
         if plan.get("overrides", {}).get("data.prepare"):
             details["downloads"] = "Dataset download required (MRL is ~431 MB)."
+
+    if call["name"] == "land_generated_code":
+        from adaptrna_agentic.agents.tool_factory import staged
+
+        stage = staged(args.get("stage_id", ""))
+        if stage is not None:
+            details["files"] = stage.summary()
+            details["staging_path"] = str(stage.package_dir)
+            details["diff"] = stage.diff()
 
     return details
 

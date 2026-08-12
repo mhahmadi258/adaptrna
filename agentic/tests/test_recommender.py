@@ -225,3 +225,38 @@ def test_hub_without_weights_warns_about_a_random_backbone(splice_profile, regis
 
     assert plan["overrides"]["pretrained_weights"] == "null"
     assert any("randomly initialised backbone" in w for w in plan["warnings"])
+
+
+# ---------------------------------------------------------------- generated tasks
+
+def test_unknown_task_uses_validated_arm_settings_but_no_reference_band(
+    splice_profile, registry, monkeypatch
+):
+    """A generated task has no knowledge entry. Arm settings transfer across tasks;
+    a reference metric band does not, and must not be invented."""
+    import adaptrna_agentic.profiling.recommender as module
+
+    monkeypatch.setattr(module, "_config_path", lambda task: f"adaptrna_custom/tasks/{task}/config.yaml")
+
+    plan = recommend(splice_profile, task="brand_new_task", registry=registry)
+
+    assert plan["overrides"]["optim.lr"] == pytest.approx(3.0e-4)     # validated, transfers
+    assert plan["overrides"]["trainer.gradient_clip_val"] == 1.0
+    assert plan["reference"]["band"] is None                          # not invented
+    assert any("not in the knowledge base" in w for w in plan["warnings"])
+    assert any("baseline" in w for w in plan["warnings"])
+
+
+def test_generated_task_config_path_points_at_its_own_package(splice_profile, registry, monkeypatch):
+    import adaptrna_agentic.profiling.recommender as module
+
+    monkeypatch.setattr(module, "_config_path", lambda task: f"adaptrna_custom/tasks/{task}/config.yaml")
+    plan = recommend(splice_profile, task="generated_thing", registry=registry)
+
+    assert plan["config_path"] == "adaptrna_custom/tasks/generated_thing/config.yaml"
+
+
+def test_every_plan_is_stamped_with_its_source(splice_profile, registry):
+    from adaptrna_agentic.profiling.recommender import PLAN_SOURCE
+
+    assert recommend(splice_profile, registry=registry)["source"] == PLAN_SOURCE

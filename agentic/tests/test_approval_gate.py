@@ -12,6 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from adaptrna_agentic.agents.orchestrator import build_orchestrator_graph
+from adaptrna_agentic.profiling.recommender import PLAN_SOURCE
 from adaptrna_agentic.agents.tool_factory import GATED_TOOLS
 from adaptrna_agentic.toolhub.runtime import AdapterRuntime
 from scripted_model import scripted, tool_call
@@ -43,7 +44,7 @@ def fake_plan(tmp_path, name="gated_run"):
     output_dir = tmp_path / "outputs" / name
 
     return {
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
         "estimated_wall_clock": "~7 min",
         "command": [sys.executable, str(script), str(output_dir)],
         "overrides": {}, "warnings": [],

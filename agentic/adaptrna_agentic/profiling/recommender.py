@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import sys
 
 from adaptrna_agentic.knowledge import arm as arm_knowledge
-from adaptrna_agentic.knowledge import task_knowledge, template_for, universal
+from adaptrna_agentic.knowledge import task_knowledge_or_generic, template_for, universal
 from adaptrna_agentic.settings import REPO_ROOT
 from adaptrna_agentic.toolhub.errors import ToolHubError
 
@@ -21,6 +21,11 @@ QUICK_RUN_MAX_STEPS = 200
 QUICK_RUN_NUM_WORKERS = 8
 
 TRAIN_ENTRYPOINT = "adaptrna_agentic.jobs.train_entrypoint"
+
+#: Stamped on every plan this module produces. `start_training` refuses plans without it,
+#: so a hand-assembled plan cannot smuggle invented hyperparameters past the knowledge
+#: base — the rule is enforced mechanically rather than by asking the model nicely.
+PLAN_SOURCE = "recommend_training_config"
 
 
 def recommend(
@@ -53,7 +58,7 @@ def recommend(
             "train yet. " + (profile.get("layout_reason") or "")
         )
 
-    knowledge = task_knowledge(task)
+    knowledge = task_knowledge_or_generic(task)
     arm_spec = arm_knowledge(arm)
     template = template_for(task)
     options = dict(task_options or {})
@@ -141,9 +146,10 @@ def recommend(
     # --- assemble ---------------------------------------------------------------
     run_name = run_name or _run_name(task, arm, options)
     output_dir = f"outputs/{run_name}"
-    config_path = f"engine/configs/tasks/{task}.yaml"
+    config_path = _config_path(task)
 
     plan = {
+        "source": PLAN_SOURCE,
         "task": task,
         "arm": arm,
         "config_path": config_path,
@@ -191,6 +197,17 @@ def _render(value: Any) -> str:
     if value is None:
         return "null"
     return str(value)
+
+
+def _config_path(task: str) -> str:
+    """A generated task's config lives beside its code, not under engine/configs."""
+    from adaptrna_agentic.codegen.discovery import CUSTOM_PACKAGE, TASKS_DIRNAME
+
+    custom = REPO_ROOT / CUSTOM_PACKAGE / TASKS_DIRNAME / task / "config.yaml"
+    if custom.exists():
+        return f"{CUSTOM_PACKAGE}/{TASKS_DIRNAME}/{task}/config.yaml"
+
+    return f"engine/configs/tasks/{task}.yaml"
 
 
 def _backbone_config(registry=None):

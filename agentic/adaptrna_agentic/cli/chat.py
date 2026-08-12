@@ -117,6 +117,11 @@ def _prompt_approval(request) -> dict:
             print(f"  │   output:    {details['output_dir']}")
         if details.get("downloads"):
             print(f"  │   note:      {details['downloads']}")
+        for entry in details.get("files") or []:
+            print(f"  │   write:     {entry['path']}  ({entry['lines']} lines)")
+        if details.get("staging_path"):
+            print(f"  │   staged in: {details['staging_path']}")
+            print("  │   (open it in your editor to read the code before approving)")
         for warning in details.get("warnings") or []:
             print(f"  │   ! {warning}")
     print("  └" + "─" * 66)

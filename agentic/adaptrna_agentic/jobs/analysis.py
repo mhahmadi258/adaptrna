@@ -19,7 +19,7 @@ import math
 
 from adaptrna_agentic.jobs.runner import latest_metrics_file
 from adaptrna_agentic.knowledge import arm as arm_knowledge
-from adaptrna_agentic.knowledge import task_knowledge
+from adaptrna_agentic.knowledge import task_knowledge_or_generic
 
 VERDICT_OK = "ok"
 VERDICT_SUSPICIOUS = "suspicious"
@@ -68,8 +68,15 @@ def analyze_run(
         report["checks"].append("no task recorded — cannot compare against a reference")
         return report
 
-    knowledge = task_knowledge(task)
+    knowledge = task_knowledge_or_generic(task)
     primary = knowledge["primary_metric"]
+    if primary is None:
+        report["verdict"] = VERDICT_SUSPICIOUS
+        report["checks"].append(
+            f"'{task}' declares no primary metric and has no knowledge-base entry — "
+            f"the run's metrics are reported, but nothing judges them"
+        )
+        return report
     value = metrics.get(primary)
     report["primary_metric"] = primary
     report["primary_value"] = value

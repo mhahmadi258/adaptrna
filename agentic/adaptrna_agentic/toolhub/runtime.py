@@ -64,12 +64,26 @@ class AdapterRuntime:
                 "Run `pip install -e ./engine` from the repo root."
             ) from exc
 
+        self._load_custom_tasks()
+
         return RiNALMoHub(
             backbone_weights=weights,
             lm_config=backbone.lm_config,
             device=backbone.resolved_device(),
             dtype=backbone.resolved_dtype(),
         )
+
+    @staticmethod
+    def _load_custom_tasks() -> None:
+        """Generated tasks must be imported before the hub can serve their adapters.
+
+        The engine resolves an adapter's task through `get_task(name)`, which only knows
+        what `@register_task` has registered — so without this a generated task would
+        train fine and then fail to serve.
+        """
+        from adaptrna_agentic.codegen.discovery import load_all
+
+        load_all()
 
     def _register_active(self) -> None:
         for entry in self.registry.list():

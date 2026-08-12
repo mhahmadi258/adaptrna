@@ -70,6 +70,41 @@ to reference metrics, and a difference inside the task's tolerance is never call
 regression (FlashAttention's non-deterministic backward gave F1 95.21 vs 95.82 for the
 same command and seed).
 
+Hyperparameters can only come from the knowledge base: `start_training` refuses any plan
+that did not come out of `recommend_training_config`, so the rule is enforced by code
+rather than by asking the model to behave.
+
+## Building new tools from chat (Phase 6)
+
+When no existing task can read your data, the assistant writes one — three files, no
+engine change — verifies it, and stages it for your review:
+
+```
+you> I have labelled sequences in dod_data/. Can anything train on this?
+#    → profile: no shipped task reads this layout
+you> Then build me a task for it, called splice_simple.
+#    → ToolSmith writes task.py / datamodule.py / config.yaml
+#    → harness runs it for real: import, config, datamodule on YOUR data,
+#      forward+backward, metrics, adapter round trip, serving through the hub
+#    → an independent reviewer checks what tests cannot
+you> Land it.                     ← approval gate: file list, line counts, staging path
+```
+
+Generated code lands in [`adaptrna_custom/`](../adaptrna_custom/) — git-tracked, yours to
+edit, never silently regenerated. Staged code survives the session, so you can open it in
+an editor and approve it later (`list_staged_code`).
+
+The harness is the trust boundary, so it is itself controlled: the shipped tasks are run
+through it in CI, and deliberately broken fixtures must fail it. Its sharpest check is the
+adapter **round-trip prediction equivalence** — randomise everything the adapter should
+carry, predict, save, reload into a fresh module, predict again, and require identical
+outputs. That turns this project's worst silent failure (task state that never reaches the
+adapter file) into a hard test rather than a question on a checklist.
+
+Generated code runs under a subprocess with time, memory and file-size limits. That is
+**accident-isolation, not adversarial sandboxing** — the human diff gate is the real
+boundary.
+
 ## ToolHub (Phase 2)
 
 Adapters served as tools from one shared backbone. Registry operations are instant;

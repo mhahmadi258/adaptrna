@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from adaptrna_agentic.agents.tool_factory import GATED_TOOLS, build_agent_tools
+from adaptrna_agentic.profiling.recommender import PLAN_SOURCE
 from adaptrna_agentic.toolhub.runtime import AdapterRuntime
 
 PIPELINE_TOOLS = (
@@ -32,7 +33,10 @@ def test_all_pipeline_tools_are_bound(tools):
 
 
 def test_only_consequential_tools_are_gated():
-    assert set(GATED_TOOLS) == {"start_training", "register_trained_adapter"}
+    # GPU hours, a new servable tool, and writing code into the repository.
+    assert set(GATED_TOOLS) == {
+        "start_training", "register_trained_adapter", "land_generated_code",
+    }
 
 
 def test_profile_and_recommend_round_trip(tools, tmp_path):
@@ -85,6 +89,7 @@ def _finished_job(tmp_path, built, adapter_source):
         "(out/'exit_code').write_text('0')\n"
     )
     plan = {
+        "source": PLAN_SOURCE,
         "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir), str(adapter_source)],
         "overrides": {}, "estimated_wall_clock": "~7 min", "warnings": [],
@@ -141,6 +146,7 @@ def test_registering_an_unfinished_job_is_refused(tools, tmp_path):
                       "time.sleep(30)\n")
     output_dir = tmp_path / "outputs" / "slow_run"
     built["start_training"].invoke({"plan": {
+        "source": PLAN_SOURCE,
         "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir)],
         "overrides": {}, "warnings": [],
@@ -153,3 +159,19 @@ def test_registering_an_unfinished_job_is_refused(tools, tmp_path):
 
     from adaptrna_agentic.jobs.runner import JobRunner
     JobRunner().cancel("slow_run")
+
+
+def test_start_training_refuses_a_hand_assembled_plan(tools):
+    """The 'never invent hyperparameters' rule, enforced mechanically rather than by
+    prompt: a plan that did not come from the recommender is refused."""
+    built, _registry = tools
+    forged = {
+        "task": "splice_site", "arm": "lora", "output_dir": "outputs/forged",
+        "command": ["echo", "hi"], "overrides": {"optim.lr": 1e-3},
+    }
+
+    result = built["start_training"].invoke({"plan": forged})
+
+    assert isinstance(result, str)
+    assert "recommend_training_config" in result
+    assert "knowledge base" in result

@@ -14,15 +14,17 @@ from pathlib import Path
 from typing import List, Optional
 import sys
 
-#: Task modules generated/added outside the engine. Empty until Phase 6.
-CUSTOM_TASK_MODULES: List[str] = []
-
 
 def _import_custom_tasks() -> None:
-    import importlib
+    """Import generated tasks from `<repo>/adaptrna_custom/tasks/` (Phase 6)."""
+    from adaptrna_agentic.codegen.discovery import describe_failures, load_all
 
-    for module_path in CUSTOM_TASK_MODULES:
-        importlib.import_module(module_path)
+    failures = load_all()
+    if failures:
+        # Reported, not fatal: the engine will raise a clear "unknown task" error if the
+        # run actually needed one of these.
+        print(f"warning: custom task(s) failed to import — {describe_failures(failures)}",
+              file=sys.stderr)
 
 
 def _output_dir(argv: List[str]) -> Optional[Path]:

@@ -15,5 +15,7 @@ adapters/
 toolhub_data/
 chat_data/
 jobs_data/
+# demo data for the codegen flow; regenerate with agentic/scripts/make_demo_data.py
+dod_data/
 *.pt
 *.ckpt
