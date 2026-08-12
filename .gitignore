@@ -13,5 +13,6 @@ weights/
 outputs/
 adapters/
 toolhub_data/
+chat_data/
 *.pt
 *.ckpt

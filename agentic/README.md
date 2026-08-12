@@ -26,11 +26,19 @@ Export `ANTHROPIC_API_KEY`, or put it in a repo-root `.env` (git-ignored):
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## Try it
+## Chat (Phase 4)
+
+The orchestrator: every ToolHub tool (adapters + external) plus lifecycle operations
+(list/info/activate/deactivate/test) bound as agent tools. Sessions persist in
+`chat_data/sessions.sqlite` (`ADAPTRNA_CHAT_DIR` overrides; `langgraph-checkpoint-sqlite
+3.1.1`). One chat process holds one runtime — the backbone loads once, on the first
+foundation-model call (`--warmup` for eager).
 
 ```bash
-python -m adaptrna_agentic.cli.chat --once "What is the GC content of GGCAUUACGGCU?"
-python -m adaptrna_agentic.cli.chat            # REPL; 'quit' to exit
+python -m adaptrna_agentic.cli.chat                      # REPL, session 'default'
+python -m adaptrna_agentic.cli.chat --session paper      # named persistent session
+python -m adaptrna_agentic.cli.chat --once "Is GGC...ACU a donor splice site?"
+python -m adaptrna_agentic.cli.chat --list-sessions
 ```
 
 Per-role models default to `anthropic:claude-opus-5`; override with `ADAPTRNA_MODEL`

@@ -2,41 +2,17 @@
 tool binding, ToolNode execution, loop termination — with no network and no API key.
 This is everything the hello graph does except Anthropic's API itself."""
 
-from typing import Any, List, Optional
+from typing import List
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
-    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.outputs import ChatGeneration, ChatResult
 
 from adaptrna_agentic.agents.hello import SYSTEM_PROMPT, build_hello_graph
-
-
-class ScriptedChatModel(BaseChatModel):
-    """Minimal fake chat model honoring `bind_tools`: replays a fixed list of AIMessages."""
-
-    script: List[AIMessage]
-    calls: List[List[BaseMessage]]
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "ScriptedChatModel":
-        return self
-
-    def _generate(
-        self, messages: List[BaseMessage], stop: Optional[List[str]] = None,
-        run_manager: Any = None, **kwargs: Any,
-    ) -> ChatResult:
-        self.calls.append(list(messages))
-        message = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
-        return ChatResult(generations=[ChatGeneration(message=message)])
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted"
+from scripted_model import ScriptedChatModel
 
 
 def _scripted(script: List[AIMessage]) -> ScriptedChatModel:
