@@ -285,6 +285,7 @@ Known engine behaviors, rephrased as design consequences for this layer:
 | No metric-based checkpoint selection exists; final-epoch weights are what gets tested | If the pipeline ever adds early stopping / best-checkpoint selection, MRL-style tasks must switch to `val_split=holdout` first — otherwise a reported result becomes the selection set |
 | FlashAttention's backward is non-deterministic; the forward pass is deterministic | Training-result analysis uses tolerances (differences under ~1 F1 point are noise; multi-seed for claims); adapter smoke tests may assert tight values on a fixed device/dtype |
 | Gradient checkpointing is unconditionally on; `need_attn_weights=True` forces the slow attention path | Do not "optimize" either; attention-map features would need explicit design |
+| Non-autocast half-precision inference is broken: casting the model to bf16/fp16 trips a dtype promotion in `TokenDropout` (an fp32 scalar promotes activations to fp32, which then hit bf16 layer-norm weights) — found in Phase 2 (2026-08-12) | ToolHub serving runs fp32 (`dtype: auto`); half-precision serving needs an engine fix or an agentic-side autocast wrapper (revisit when serving throughput matters, Phase 4/8) |
 
 ---
 
@@ -297,7 +298,7 @@ done is demonstrated, not when its code exists.
 |---|---|---|---|---|
 | 0 | Scaffolding | `agentic/` package skeleton; LangGraph + langchain-anthropic deps; per-role model config; API-key handling | A hello-world graph answers via Claude from the terminal | ✅ done 2026-08-12 — 16 tests green; DoD demo verified (tool call → 0.583 answer, REPL incl. parallel tool calls) |
 | 1 | Repo restructure | Existing code moved to `engine/`; `agentic/` and `ui/` created; paths fixed (pyproject packaging, `rinalmo_hub/config.py` REPO_ROOT, CLI default-config path, pytest pythonpath, README) | `cd engine && pytest` → 135 passed; a smoke train command still works from the repo root | ✅ done 2026-08-12 — 135+16 tests green post-move, zero engine code edits; stale editable install (pointing at ~/bio2/RiNALMo) replaced by `pip install -e ./engine` |
-| 2 | ToolHub core (no LLM) | Manifest registry; AdapterTool over `RiNALMoHub`; lifecycle ops; management CLI | The existing splice-site adapter (`outputs/splice_donor_lora/`) registered and predicting from the CLI; nano tests green | ☐ |
+| 2 | ToolHub core (no LLM) | Manifest registry; AdapterTool over `RiNALMoHub`; lifecycle ops; management CLI | The existing splice-site adapter (`outputs/splice_donor_lora/`) registered and predicting from the CLI; nano tests green | ✅ done 2026-08-12 — 52 agentic tests green; real donor adapter registered, positives 0.9996/0.9998 vs negatives ~0.01–0.14 on Danio windows; smoke test + routing-level deactivation verified |
 | 3 | External tools | ExternalTool interface; approval-gated install flow; hand-written ViennaRNA reference wrapper; golden smoke tests | `toolhub test vienna_fold` passes; enable/disable works | ☐ |
 | 4 | Orchestrator MVP | LangGraph chat graph in a terminal REPL; ToolHub tools bound; sessions checkpointed (SQLite) | "What tools are available?" and "is this sequence a donor site?" answered end-to-end, adapter switching under the hood | ☐ |
 | 5 | Fine-tuning pipeline | DataProfiler; ConfigRecommender (knowledge-base-grounded); JobRunner (local GPU subprocess, `metrics.csv` monitoring, job store); result analysis; registration step | The MRL scenario works from chat: data in → recommended config → approval → LoRA run trains → results analyzed → registered → serving predictions | ☐ |
@@ -335,11 +336,11 @@ Tracked here; each is decided in the detailed plan of the phase that first needs
 
 | Decision | Options on the table | Decide in |
 |---|---|---|
-| Manifest store | JSON file vs SQLite | Phase 2 |
+| Manifest store | **Decided (Phase 2):** JSON file (`toolhub_data/tools.json`, atomic writes, versioned) — single user/process until Phase 8; human-diffable | revisit at Phase 8 if concurrent writers appear |
 | Where generated code lands | dedicated `custom_tasks/` package vs `toolhub_data/` staging + import path | Phase 6 |
 | Sandbox depth for generated code | subprocess + timeout + clean env vs container | Phase 6 |
 | Model per agent role | **Decided (Phase 0):** all roles default `anthropic:claude-opus-5`; per-role env overrides (`ADAPTRNA_MODEL`, `ADAPTRNA_MODEL_<ROLE>`) are the cost lever — capability first, downgrades stay a config edit | revisit before Phase 4 |
-| Backbone load policy | eager at chat start vs lazy on first FM call | Phase 2 |
+| Backbone load policy | **Decided (Phase 2):** lazy — registry ops never load; first forward-pass call does; explicit `warmup`/`rebuild` ops | Phase 4's chat may call `warmup` eagerly at startup |
 | UI stack | React + TS on the Phase-8 API (default) vs Gradio quick path | Phase 9 |
 
 ---

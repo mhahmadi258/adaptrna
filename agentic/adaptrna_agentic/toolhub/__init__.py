@@ -1,3 +1,15 @@
-"""Tool-Hub: registry + runtime for adapter and external tools. Filled in Phase 2
-(manifest, AdapterTool over RiNALMoHub, lifecycle, management CLI) and Phase 3
-(ExternalTool + the ViennaRNA reference wrapper)."""
+"""Tool-Hub: registry + runtime for adapter tools (Phase 2). External tools and the
+ViennaRNA reference arrive in Phase 3."""
+
+from adaptrna_agentic.toolhub.manifest import BackboneConfig, Manifest, ToolEntry
+from adaptrna_agentic.toolhub.registry import Registry, ToolHubError
+from adaptrna_agentic.toolhub.runtime import AdapterRuntime
+
+__all__ = [
+    "AdapterRuntime",
+    "BackboneConfig",
+    "Manifest",
+    "Registry",
+    "ToolEntry",
+    "ToolHubError",
+]

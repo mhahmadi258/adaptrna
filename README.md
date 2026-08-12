@@ -17,6 +17,7 @@ and engine commands are run from here — e.g.:
 ```bash
 python -m rinalmo_hub.cli.train --task splice_site --use_lora --set optim.lr=3e-4 \
     --output_dir outputs/splice_donor_lora
+python -m adaptrna_agentic.cli.toolhub register outputs/splice_donor_lora/splice_site_adapter.pt
 python -m adaptrna_agentic.cli.chat
 ```
 

@@ -36,6 +36,25 @@ python -m adaptrna_agentic.cli.chat            # REPL; 'quit' to exit
 Per-role models default to `anthropic:claude-opus-5`; override with `ADAPTRNA_MODEL`
 (all roles) or `ADAPTRNA_MODEL_ORCHESTRATOR` / `_TOOLSMITH` / `_VERIFIER`.
 
+## ToolHub (Phase 2)
+
+Adapters served as tools from one shared backbone. Registry operations are instant;
+`predict`/`test`/`warmup` load the backbone lazily (per process). State lives in
+`toolhub_data/` at the repo root (git-ignored).
+
+```bash
+python -m adaptrna_agentic.cli.toolhub config --weights ~/.cache/rinalmo_pretrained/giga-v1.pt
+python -m adaptrna_agentic.cli.toolhub register outputs/<run>/<task>_adapter.pt
+python -m adaptrna_agentic.cli.toolhub list
+python -m adaptrna_agentic.cli.toolhub predict <name> --sequences ACGU... [--input file]
+python -m adaptrna_agentic.cli.toolhub test <name>        # smoke test
+python -m adaptrna_agentic.cli.toolhub deactivate <name>  # routing-level; activate restores
+```
+
+Adapter tools are LoRA-only (a full-FT export would pair its head with the pretrained
+backbone). Serving runs fp32 (`dtype: auto`): non-autocast bf16 inference trips a dtype
+promotion inside the engine's TokenDropout — see MASTER_PLAN §7.
+
 ## Tests (no network, no API key)
 
 ```bash

@@ -12,5 +12,6 @@ dataset/
 weights/
 outputs/
 adapters/
+toolhub_data/
 *.pt
 *.ckpt
