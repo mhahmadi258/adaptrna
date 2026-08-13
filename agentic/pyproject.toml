@@ -39,4 +39,10 @@ packages = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# `ui` is opt-in (`-m ui`): it drives a real browser through Playwright, which is a
+# ~150 MB download and has no business being a prerequisite for the default suite —
+# the same treatment the engine gives its GPU tests.
+addopts = "-ra -m 'not ui'"
+markers = [
+    "ui: browser tests, require `playwright install chromium` and a live server",
+]

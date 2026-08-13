@@ -292,6 +292,7 @@ Known engine behaviors, rephrased as design consequences for this layer:
 | `(mtime, size)` is not a change stamp: two writes of identical content inside one filesystem timestamp tick are indistinguishable — found in Phase 7 | Both JSON stores carry a monotonic revision counter *inside* the file |
 | A model whose deterministic tool errors will route around it — here, hand-assembling a training plan when the recommender refused an unknown task (Phase 6) | Plans are stamped by `recommend_training_config`; `start_training` refuses anything unstamped. Guardrails that matter are enforced in code, not in the prompt |
 | `configs/base.yaml` defaults `pretrained_weights` to `weights/giga-v1.pt`, resolved against the *working directory* — a path that need not exist (here the checkpoint lives in `~/.cache/rinalmo_pretrained/`) | Every training plan sets `pretrained_weights` and `lm_config` from the **ToolHub manifest's** backbone, so a run trains against exactly the backbone the hub serves; a hub with no checkpoint configured warns instead of silently training from random weights (found in Phase 5) |
+| Phase 7's optimistic concurrency answers **409 while a store is mid-write**, and the likeliest moment for that is just after a run starts — exactly when a client is watching most closely (found in Phase 9's live DoD, which crashed on it) | A 409 marked `retryable` is a *transient* answer, not a stop condition: polling clients keep their last good render **and keep polling**. The browser's job monitor re-arms its timer on failure; a version that returned early froze the panel permanently the first time a job started |
 
 ---
 
@@ -311,7 +312,7 @@ done is demonstrated, not when its code exists.
 | 6 | ToolSmith + Verifier | Codegen for new task types (three files) and external wrappers; verification pipeline (checklists, CPU structural tests, sandboxed smoke tests); bounded loop; human diff approval; custom-task import seam | A new task type becomes a working, registered tool without hand-written code | ✅ done 2026-08-12 — `splice_simple` generated, verified (7/7 harness checks, first attempt), landed and trained; 240 agentic tests green |
 | 7 | Hardening | Persistence polish (job history, provenance); error recovery (crashed runs, partial registrations, orphaned staging); scenario eval suite; user guide | Failure paths behave as documented; eval scenarios green | ✅ done 2026-08-12 — 297 agentic tests green; chaos drill passed (missing artifact, recycled PID, orphaned stage, prune guards); doctor clean afterwards |
 | 8 | Service API | FastAPI app over the same graph + checkpointer: streaming chat (SSE), toolhub endpoints, job endpoints | Terminal and HTTP clients share sessions; the Phase-4 demo works over HTTP | ✅ done 2026-08-13 — 348 agentic tests green; live: donor window scored 0.9998 over SSE, sessions crossed terminal↔HTTP both ways, approval gate refused and then launched a run whose progress streamed back |
-| 9 | Web UI | `ui/` frontend: chat, tool dashboard, live training monitor, approval dialogs. Stack finalized in its detailed plan (default: React + TS on the Phase-8 API) | The Phase-5 scenario driven end-to-end from the browser | ☐ |
+| 9 | Web UI | `ui/` frontend: chat, tool dashboard, live training monitor, approval dialogs. **Stack: plain ES modules served by the API, no build step** (§10) | The Phase-5 scenario driven end-to-end from the browser | ✅ done 2026-08-13 — 381 agentic tests green + 11 opt-in browser tests; live in Chromium against the real install: profiled `dod_data/` → validated config → **approval modal byte-identical to the terminal's** (621 chars, verified against `_prompt_approval` itself) → approved → monitor updated **9 times in place** (epoch 0/step 49 → epoch 4/step 200, val/f1 0.923 → 0.970) → analysis rendered `ok` + truncated caveat → real 400 nt windows scored **0.9998** / **0.0047**; sessions crossed browser↔terminal both ways; zero JS errors throughout |
 
 **Dependencies:** 0 → 1 → 2 → 3 → 4 → 5 → 6, in order. Phase 7 runs continuously from
 Phase 4 onward. Phase 8 can start after 4 (it is genuinely useful after 5). Phase 9 needs 8.
@@ -347,7 +348,7 @@ Tracked here; each is decided in the detailed plan of the phase that first needs
 | Sandbox depth for generated code | **Decided (Phase 6):** subprocess + rlimits + timeout. Accident-isolation, not adversarial sandboxing; the human diff gate is the real boundary, containers the upgrade path | revisit if generated code ever comes from an untrusted source |
 | Model per agent role | **Decided (Phase 0, revisited Phase 4):** all roles default `anthropic:claude-opus-5`; per-role env overrides (`ADAPTRNA_MODEL`, `ADAPTRNA_MODEL_<ROLE>`) are the cost lever. Phase 4 kept opus-5 for the orchestrator MVP (quality-first while flows are new) | re-evaluate with real usage data at Phase 8 |
 | Backbone load policy | **Decided (Phase 2):** lazy — registry ops never load; first forward-pass call does; explicit `warmup`/`rebuild` ops | Phase 4's chat may call `warmup` eagerly at startup |
-| UI stack | React + TS on the Phase-8 API (default) vs Gradio quick path | Phase 9 |
+| UI stack | **Decided (Phase 9) — neither default: plain ES modules served by the API, no build step.** Node 20 was available, so React was ruled out on fit rather than feasibility: the client is a renderer of server state (the checkpointer, manifest and job store hold everything), so a second dependency ecosystem in a 164-file Python repo bought nothing for four views. Gradio was worse — it wants to own the app loop, so the gate and monitor would have been reimplemented a third time. Tripwire: past ~1000 client lines, a second maintainer, or real client-side state, port to React; the API is the contract, so that costs the client alone | — |
 
 ---
 
@@ -360,4 +361,20 @@ Tracked here; each is decided in the detailed plan of the phase that first needs
 3. If a phase reveals that a principle in §3 or a constraint in §7 is wrong, change this
    document first, then the code.
 
-**Next step:** detailed plan for Phase 1 (repo restructure) + Phase 2 (ToolHub core).
+**Status (2026-08-13):** all ten phases (0–9) are landed and every §10 decision is
+resolved. The roadmap in this document is complete: engine untouched at 135 tests, the
+agent platform at 381 deterministic tests plus 11 opt-in browser tests, and the same
+system reachable from a terminal REPL, an HTTP API and a browser — sharing one
+checkpointer, one backbone and one set of approval gates.
+
+**Where to take it next**, in rough order of value:
+
+1. **Use it on a real question.** Everything after this point should be driven by what
+   breaks when the platform meets a problem nobody designed it around.
+2. **A second backbone.** The naming is model-agnostic and the manifest records which
+   checkpoint a tool was built against, but nothing has ever served two. That is the
+   assumption most worth testing.
+3. **Half-precision serving**, if throughput starts to matter — §7 records what blocks it.
+4. **Multi-user**, if it is ever more than one researcher: today's posture (loopback, one
+   token, no delete surface) is a deliberate single-user design, not a starting point for
+   a shared deployment.

@@ -49,6 +49,29 @@ Two rules the platform enforces in code rather than by prompt: hyperparameters o
 come from the knowledge base of validated runs, and nothing consequential (GPU hours, a
 new servable tool, code written into your repo) happens without your approval.
 
+## In the browser
+
+```bash
+python -m adaptrna_agentic.cli.serve --open        # 127.0.0.1:8000, opens the UI
+```
+
+The same platform with a face on it: streamed chat, a tool dashboard you can toggle and
+test from, a live training monitor, and the approval gate as a dialog. Sessions are shared
+with the terminal — start a conversation in `chat`, continue it in the browser, and back.
+
+![The AdaptRNA web UI](docs/web-ui.png)
+
+Approvals show the **exact command** — byte for byte what the terminal prints, verified
+against the terminal's own renderer — because the only thing that makes the gate worth
+having is that you can see what you are agreeing to:
+
+![The approval gate](docs/approval-gate.png)
+
+It binds to loopback and **refuses to start** on any other address without
+`ADAPTRNA_API_TOKEN` — this service can spend GPU hours and write code into your
+repository. No build step is involved: the UI is plain ES modules served by the API, so
+there is no `npm install` and it works offline.
+
 ## Managing it
 
 ```bash

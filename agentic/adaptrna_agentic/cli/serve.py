@@ -28,8 +28,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup", action="store_true",
                         help="Load the backbone at startup instead of on first use")
     parser.add_argument("--reload", action="store_true", help="Auto-reload (development)")
+    parser.add_argument("--open", action="store_true",
+                        help="Open the web UI in a browser once the server is up")
 
     return parser
+
+
+def open_browser_later(url: str, delay: float = 1.0) -> None:
+    """Open `url` shortly after the server starts.
+
+    `uvicorn.run` blocks, so the browser is launched from a timer rather than after it —
+    and as a daemon, so a failed launch can never keep the process alive.
+    """
+    import threading
+    import webbrowser
+
+    timer = threading.Timer(delay, lambda: webbrowser.open(url))
+    timer.daemon = True
+    timer.start()
 
 
 def check_binding(host: str, token: Optional[str]) -> Optional[str]:
@@ -64,10 +80,15 @@ def main(argv=None) -> int:
         for skipped in app.state.services.runtime.warmup():
             print(f"  skipped: {skipped}", file=sys.stderr)
 
+    base = f"http://{args.host}:{args.port}"
     scheme_note = "token required" if token else "no token (loopback only)"
-    print(f"AdaptRNA API on http://{args.host}:{args.port}  [{scheme_note}]")
-    print(f"  docs:     http://{args.host}:{args.port}/docs")
+    print(f"AdaptRNA API on {base}  [{scheme_note}]")
+    print(f"  web UI:   {base}/")
+    print(f"  docs:     {base}/docs")
     print(f"  sessions: shared with the terminal chat at {app.state.services.db_path}")
+
+    if args.open:
+        open_browser_later(f"{base}/")
 
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
 

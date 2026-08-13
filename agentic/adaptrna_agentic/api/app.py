@@ -2,7 +2,8 @@
 
 Every endpoint wraps something the CLI already does — no new capability, no second
 implementation to drift. What it adds is a second *front end*, sharing sessions with the
-terminal through the same checkpointer, so Phase 9's browser UI has something to talk to.
+terminal through the same checkpointer, which is what Phase 9's browser UI talks to (it is
+served from `/`, and is a pure client of the endpoints below).
 
 Deliberately absent: any delete surface. Phase 7 kept deletion a human action at the CLI,
 and an HTTP endpoint is a weaker boundary than a shell prompt.
@@ -33,12 +34,13 @@ def create_app(services: Optional[Services] = None, **service_kwargs) -> FastAPI
     _install_error_handlers(app)
     _install_auth(app)
 
-    from adaptrna_agentic.api.routers import jobs, sessions, system, tools
+    from adaptrna_agentic.api.routers import jobs, sessions, system, tools, ui
 
     app.include_router(system.router)
     app.include_router(tools.router, prefix=API_PREFIX)
     app.include_router(jobs.router, prefix=API_PREFIX)
     app.include_router(sessions.router, prefix=API_PREFIX)
+    ui.install(app)
 
     return app
 

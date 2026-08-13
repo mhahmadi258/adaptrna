@@ -174,8 +174,31 @@ Adapter inference is serialised inside `AdapterRuntime`: the engine's hub activa
 adapter across the whole backbone before predicting, so overlapping requests for different
 tools would otherwise answer from the wrong one.
 
+## Web UI (Phase 9)
+
+```bash
+python -m adaptrna_agentic.cli.serve --open
+```
+
+Served at `/` by the same process: streamed chat, a tool dashboard, a live training
+monitor, and the approval gate as a modal showing the exact command — byte for byte what
+the terminal prints. It is a pure client of the endpoints above and holds no state of its
+own; a browser refresh mid-approval restores the dialog from `/history`, because the
+suspended turn is in the checkpointer, not in the tab.
+
+Plain ES modules, no build step — see [ui/README.md](../ui/README.md) for why, and for the
+tripwire that says when to reach for a framework instead.
+
 ## Tests (no network, no API key)
 
 ```bash
 cd agentic && ../.venv/bin/python -m pytest
+```
+
+The browser suite is opt-in, like the engine's GPU tests — it needs a ~150 MB Chromium:
+
+```bash
+../.venv/bin/python -m pip install playwright
+../.venv/bin/python -m playwright install chromium
+../.venv/bin/python -m pytest -m ui
 ```

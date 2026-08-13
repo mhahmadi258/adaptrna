@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AdaptRNA</title>
+<link rel="stylesheet" href="/ui/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🧬</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Adapt<span>RNA</span></div>
+  <button id="health" class="badge" type="button" title="Install health">checking…</button>
+  <div class="session">
+    <label for="session-picker">session</label>
+    <select id="session-picker"></select>
+    <button id="session-new" class="btn btn-quiet" type="button" title="Start a new session">new</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="chat" aria-label="Chat">
+    <div id="chat-log" class="chat-log"></div>
+    <div id="thinking" class="thinking" hidden><span></span><span></span><span></span></div>
+    <div class="composer">
+      <textarea id="composer-input" rows="1" placeholder="Ask about your data, your tools, or a fine-tune…"></textarea>
+      <button id="composer-send" class="btn btn-primary" type="button">Send</button>
+    </div>
+  </section>
+
+  <aside class="side" aria-label="Tools and jobs">
+    <section class="panel">
+      <h2>Tools</h2>
+      <div id="tools-list" class="panel-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Jobs</h2>
+      <div id="jobs-list" class="panel-list"></div>
+    </section>
+
+    <section id="inspector" class="panel inspector" hidden>
+      <h2>
+        <span id="inspector-title"></span>
+        <button id="inspector-close" class="btn btn-quiet" type="button" title="Close">×</button>
+      </h2>
+      <div id="inspector-body"></div>
+    </section>
+  </aside>
+
+</main>
+
+<div id="approval" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="approval-heading">
+  <div class="modal">
+    <h2 id="approval-heading">Approval required</h2>
+    <div id="approval-body"></div>
+    <label class="approval-note-label" for="approval-note">note (optional)</label>
+    <input id="approval-note" type="text" placeholder="why, if you are declining">
+    <div class="modal-actions">
+      <button id="approval-decline" class="btn" type="button">Decline</button>
+      <button id="approval-approve" class="btn btn-primary" type="button">Approve</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/ui/app.js"></script>
+</body>
+</html>
