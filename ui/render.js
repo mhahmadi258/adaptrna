@@ -76,6 +76,55 @@ export function noticeMessage(text) {
   return el("div", { class: "msg msg-notice" }, el("div", { class: "msg-body", text }));
 }
 
+// ------------------------------------------------------------------ sessions
+
+const MINUTE = 60000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** Coarse on purpose: the rail needs "which of these is recent", not a duration. */
+export function relativeTime(iso) {
+  if (!iso) return "";
+
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+
+  const ago = Date.now() - then;
+  if (ago < MINUTE) return "just now";
+  if (ago < HOUR) return `${Math.floor(ago / MINUTE)}m ago`;
+  if (ago < DAY) return `${Math.floor(ago / HOUR)}h ago`;
+  if (ago < 2 * DAY) return "yesterday";
+  if (ago < 7 * DAY) return `${Math.floor(ago / DAY)}d ago`;
+
+  return new Date(then).toLocaleDateString();
+}
+
+export function sessionRow(session, handlers, isCurrent) {
+  return el(
+    "div",
+    { class: `session-row ${isCurrent ? "is-current" : ""}` },
+    el(
+      "button",
+      { class: "session-open", type: "button", title: session.id,
+        onclick: () => handlers.select(session.id) },
+      el("span", { class: "session-name", text: session.id }),
+      el("span", { class: "session-when", text: relativeTime(session.updated_at) }),
+    ),
+    el(
+      "div",
+      { class: "session-actions" },
+      el("button", {
+        class: "btn btn-quiet", text: "✎", title: `Rename '${session.id}'`,
+        onclick: () => handlers.rename(session.id),
+      }),
+      el("button", {
+        class: "btn btn-quiet", text: "🗑", title: `Delete '${session.id}'`,
+        onclick: () => handlers.remove(session.id),
+      }),
+    ),
+  );
+}
+
 // ------------------------------------------------------------------ tools
 
 export function toolRow(entry, handlers) {
@@ -234,6 +283,10 @@ export function approvalBody(request) {
          el("span", { class: "approval-label", text: label }),
          el("code", { class: "approval-value", text: value }));
 
+    if (details.tool) {
+      rows.push(line("tool", details.tool));
+      rows.push(line("state", `${details.current_state} → ${details.after_approval}`));
+    }
     if (details.command) rows.push(line("would run", details.command.join(" "), { class: "approval-line approval-command" }));
     if (details.output_dir) rows.push(line("output", details.output_dir));
     if (details.downloads) rows.push(line("note", details.downloads));

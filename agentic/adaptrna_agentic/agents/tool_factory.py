@@ -2,11 +2,15 @@
 
 The toolhub package stays LangChain-free; this module is the only place the two meet.
 
-Binding policy (plans/PHASE_4_ORCHESTRATOR.md §2): every registered tool is bound —
-disabled entries carry a DISABLED note in their description — and *execution* enforces
-state at call time through the shared Registry/Runtime. That is what lets the model
-activate a tool and use it within the same turn, and the refusal message teaches it the
-activate-first lifecycle.
+Binding policy (plans/PHASE_4_ORCHESTRATOR.md §2, amended by PHASE_10 §1): every registered
+tool is bound — disabled entries carry a DISABLED note in their description — and
+*execution* enforces state at call time through the shared Registry/Runtime.
+
+Phase 4 bound everything so the model could activate a tool and use it within the same
+turn. Phase 10 reversed that: a disabled tool is a statement of intent by the user, and an
+agent that routes around it is not being helpful. Everything is still bound, but
+activate_tool/deactivate_tool are in GATED_TOOLS, so the model can *ask* for a state change
+and cannot *make* one.
 """
 
 from dataclasses import asdict
@@ -41,10 +45,21 @@ MANAGEMENT_TOOL_NAMES = (
     "land_generated_code",
 )
 
-#: Consequential operations: they burn GPU hours, write code into the repository, or add
-#: a servable tool — so the graph routes them through the approval node before the tools
-#: node may execute them (MASTER_PLAN §3.2).
-GATED_TOOLS = ("start_training", "register_trained_adapter", "land_generated_code")
+#: Consequential operations: they burn GPU hours, write code into the repository, add a
+#: servable tool, or change which tools the assistant may run at all — so the graph routes
+#: them through the approval node before the tools node may execute them (MASTER_PLAN §3.2).
+#:
+#: The last of those is gated for a different reason than the others. Training and codegen
+#: are gated for cost and blast radius; tool state is gated for *authority*. Enabling a tool
+#: is cheap and trivially reversible, but the switch is how the user says which capabilities
+#: they trust — so it is theirs, not the model's (PHASE_10 §1).
+GATED_TOOLS = (
+    "start_training",
+    "register_trained_adapter",
+    "land_generated_code",
+    "activate_tool",
+    "deactivate_tool",
+)
 
 #: Appended to adapter tool descriptions so the model knows the output type. A future
 #: sec_struct adapter returns L×L matrices — its wrapper should cap and summarize rather
@@ -55,7 +70,10 @@ _TASK_OUTPUT_NOTES = {
     "sec_struct": "Returns one base-pairing matrix per sequence (large output).",
 }
 
-_DISABLED_NOTE = " (currently DISABLED — call activate_tool('{name}') first.)"
+_DISABLED_NOTE = (
+    " (currently DISABLED — only the user can enable it. You may offer to ask them, which "
+    "is what activate_tool('{name}') does; it does not switch the tool on by itself.)"
+)
 
 
 def _surface_errors(func):
@@ -105,12 +123,19 @@ def _management_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseT
         return asdict(registry.get(name))
 
     def activate_tool(name: str) -> str:
-        """Activate a disabled tool so it can be called again."""
+        """Ask the user to enable a disabled tool. Requires their approval.
+
+        Tool state belongs to the user. This does not switch the tool on — it puts the
+        request to them and only takes effect if they approve.
+        """
         entry = registry.activate(name)
         return f"'{entry.name}' is now {entry.state}"
 
     def deactivate_tool(name: str) -> str:
-        """Disable a tool; it stays registered but refuses calls until re-activated."""
+        """Ask the user to disable a tool. Requires their approval.
+
+        The tool stays registered and refuses calls while disabled.
+        """
         entry = registry.deactivate(name)
         return f"'{entry.name}' is now {entry.state}"
 
@@ -330,7 +355,9 @@ class _SequencesInput(BaseModel):
 def _check_active(registry: Registry, name: str) -> None:
     if not registry.get(name).active:
         raise ToolException(
-            f"Tool '{name}' is disabled. Call activate_tool('{name}') first."
+            f"Tool '{name}' is disabled. Only the user can enable it — from the Tools "
+            f"panel, or with 'toolhub activate {name}'. Tell them it is off and offer to "
+            f"ask on their behalf; do not treat this as something you can resolve yourself."
         )
 
 

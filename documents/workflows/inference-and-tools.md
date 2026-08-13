@@ -128,8 +128,8 @@ All six operations are available three ways — CLI, chat, HTTP — over the sam
 |---|---|---|---|
 | list | `toolhub list` | *"what tools are available?"* | `GET /api/tools` |
 | inspect | `toolhub info <n>` | *"tell me about X"* | `GET /api/tools/{n}` |
-| activate | `toolhub activate <n>` | *"enable X"* | `POST /api/tools/{n}/activate` |
-| deactivate | `toolhub deactivate <n>` | *"disable X"* | `POST /api/tools/{n}/deactivate` |
+| activate | `toolhub activate <n>` | *"enable X"* — **asks; needs your approval** | `POST /api/tools/{n}/activate` |
+| deactivate | `toolhub deactivate <n>` | *"disable X"* — **asks; needs your approval** | `POST /api/tools/{n}/deactivate` |
 | test | `toolhub test <n>` | *"test X"* | `POST /api/tools/{n}/test` |
 | remove | `toolhub remove <n>` | — *(not an agent tool)* | — *(no delete surface)* |
 
@@ -147,16 +147,36 @@ Tool 'vienna_fold' is disabled. Enable it with `toolhub activate vienna_fold`.
 ```
 
 In chat the model receives that same string as a tool result and can act on it — which is
-why disabled tools are still *bound*, with a `(currently DISABLED — call activate_tool(...)
-first.)` note in their description. That is what lets this work in a single turn:
+why disabled tools are still *bound*, with a `(currently DISABLED — only the user can enable
+it …)` note in their description. Being bound is what lets the model **mention** a disabled
+tool accurately. It is not permission to switch it on.
+
+### The switch is yours (Phase 10)
+
+`activate_tool` and `deactivate_tool` are approval-gated. The model can put the request to
+you; only your answer changes anything:
 
 ```
 you> Disable the fold tool, then fold GGGGAAAACCCC anyway.
-  → deactivate_tool({name: "vienna_fold"})   = 'vienna_fold' is now disabled
-  → vienna_fold({sequence: "GGGGAAAACCCC"})  = Tool 'vienna_fold' is disabled. Call activate_tool…
-  → activate_tool({name: "vienna_fold"})     = 'vienna_fold' is now active
-  → vienna_fold({sequence: "GGGGAAAACCCC"})  = {"structure": "((((....))))", "mfe": -5.4}
+  → deactivate_tool({name: "vienna_fold"})   ⏸ approval: Disable the tool 'vienna_fold' (currently active)
+you> [approve]                               = 'vienna_fold' is now disabled
+  → vienna_fold({sequence: "GGGGAAAACCCC"})  = Tool 'vienna_fold' is disabled. Only the user can enable it…
+ai> It is off now, so I cannot fold that. Want me to ask you to turn it back on?
+you> yes
+  → activate_tool({name: "vienna_fold"})     ⏸ approval: Enable the tool 'vienna_fold' (currently disabled)
+you> [decline]                               = The user declined. Do not retry.
 ```
+
+Decline and the manifest is untouched — `toolhub_data/tools.json` still reads
+`"state": "disabled"`. Approve and the tool flips and the fold runs
+(`{"structure": "((((....))))", "mfe": -5.4}`).
+
+Until Phase 10 this flow ran without stopping: the model hit the refusal, called
+`activate_tool` itself, and folded the sequence — a documented feature that turned out to
+make the switch meaningless in practice. See
+[PHASE_10 §1](../../plans/PHASE_10_SESSION_RAIL_AND_TOOL_GATE.md) for the reversal, and
+[agents.md §4](../modules/agents.md#4-the-approval-gate) for why this is gated for authority
+rather than for cost.
 
 For a full cleanup, `AdapterRuntime.rebuild()` (or `toolhub rebuild`) drops the resident hub.
 

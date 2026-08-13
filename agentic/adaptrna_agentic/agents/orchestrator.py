@@ -32,10 +32,13 @@ tools (like ViennaRNA).
 
 Use the tools for any prediction or computation — never guess sequence properties
 yourself. Report tool outputs faithfully: probabilities are probabilities, not
-certainties. If a tool you need is disabled, say so and offer to activate it with
-activate_tool before using it. Use list_tools / tool_info / test_tool when the user asks
-about capabilities, and activate_tool / deactivate_tool when they want tools switched on
-or off.
+certainties. Use list_tools / tool_info / test_tool when the user asks about capabilities.
+
+Which tools are enabled is the user's decision, not yours. A disabled tool is a deliberate
+choice they made — never work around it, and never treat enabling it as a step you can take
+to get on with a task. Say plainly that the tool is off, and stop there unless they want it
+back on. activate_tool and deactivate_tool do not switch anything: they put the request to
+the user and take effect only if they approve.
 
 You can also build new tools by fine-tuning the backbone: profile_dataset describes a
 dataset, recommend_training_config proposes a validated configuration, start_training
@@ -44,8 +47,9 @@ register_trained_adapter turns a finished run into a servable tool.
 
 Never invent hyperparameters. The recommended configuration comes from a knowledge base
 of validated runs, together with the reasons behind each setting — present those reasons
-rather than your own. start_training and register_trained_adapter pause for the user's
-approval; if the user declines, say so plainly and do not retry the same action.
+rather than your own. start_training, register_trained_adapter, land_generated_code,
+activate_tool and deactivate_tool all pause for the user's approval; if the user declines,
+say so plainly and do not retry the same action.
 
 Training runs in the background: after starting one, tell the user how long it should
 take and let them keep working. When analysing a run, report the verdict and its reasons
@@ -61,9 +65,25 @@ class OrchestratorState(MessagesState):
     approvals: Dict[str, Any]
 
 
-def _summarize(call: Dict[str, Any]) -> str:
+def _tool_state(registry: Optional[Registry], name: str) -> str:
+    """A gated toggle names the tool's current state; an unknown name must not break the
+    gate — the tool call itself will fail with a proper error a moment later."""
+    if registry is None:
+        return "unknown"
+    try:
+        return registry.get(name).state
+    except (KeyError, ValueError):
+        return "unknown"
+
+
+def _summarize(call: Dict[str, Any], registry: Optional[Registry] = None) -> str:
     """One line describing what approving this call would actually do."""
     name, args = call["name"], call.get("args", {})
+
+    if name in ("activate_tool", "deactivate_tool"):
+        target = args.get("name", "?")
+        verb = "Enable" if name == "activate_tool" else "Disable"
+        return f"{verb} the tool '{target}' (currently {_tool_state(registry, target)})"
 
     if name == "start_training":
         plan = args.get("plan") or {}
@@ -89,10 +109,18 @@ def _summarize(call: Dict[str, Any]) -> str:
     return f"{name}({args})"
 
 
-def _details(call: Dict[str, Any]) -> Dict[str, Any]:
+def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[str, Any]:
     """Everything the human should see before approving — notably the exact command."""
     args = call.get("args", {})
     details: Dict[str, Any] = {}
+
+    if call["name"] in ("activate_tool", "deactivate_tool"):
+        target = args.get("name", "?")
+        details["tool"] = target
+        details["current_state"] = _tool_state(registry, target)
+        details["after_approval"] = (
+            "active" if call["name"] == "activate_tool" else "disabled"
+        )
 
     if call["name"] == "start_training":
         plan = args.get("plan") or {}
@@ -162,7 +190,8 @@ def build_orchestrator_graph(
             "type": "approval_request",
             "requests": [
                 {"id": call["id"], "tool": call["name"], "args": call.get("args", {}),
-                 "summary": _summarize(call), "details": _details(call)}
+                 "summary": _summarize(call, registry),
+                 "details": _details(call, registry)}
                 for call in pending
             ],
         })

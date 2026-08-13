@@ -71,6 +71,98 @@ def test_start_training_is_gated():
     assert "register_trained_adapter" in GATED_TOOLS
 
 
+def test_tool_state_changes_are_gated():
+    assert "activate_tool" in GATED_TOOLS
+    assert "deactivate_tool" in GATED_TOOLS
+
+
+@pytest.fixture
+def stack_with_tool(stack, nano_splice_adapter):
+    """The toggle gate needs something to toggle — the training gate's stack is empty."""
+    registry, runtime = stack
+    registry.register(nano_splice_adapter)
+    return registry, runtime
+
+
+def _toggle_script(tool, name):
+    return [
+        AIMessage(content="", tool_calls=[tool_call(tool, {"name": name})]),
+        AIMessage(content="Done."),
+    ]
+
+
+def test_activation_interrupts_before_the_registry_is_touched(stack_with_tool, saver):
+    """The same load-bearing assertion as the training gate: no side effect at the
+    interrupt. Here the side effect is the manifest, not a subprocess."""
+    registry, _runtime = stack_with_tool
+    registry.deactivate("splice_site")
+    _model, graph = _graph(stack_with_tool, _toggle_script("activate_tool", "splice_site"), saver)
+
+    result = graph.invoke({"messages": [HumanMessage(content="enable it")]}, CONFIG)
+
+    assert "__interrupt__" in result
+    request = result["__interrupt__"][0].value["requests"][0]
+    assert request["tool"] == "activate_tool"
+    assert request["summary"] == "Enable the tool 'splice_site' (currently disabled)"
+    assert request["details"]["current_state"] == "disabled"
+    assert request["details"]["after_approval"] == "active"
+
+    assert registry.get("splice_site").state == "disabled"
+
+
+def test_declining_activation_leaves_the_tool_disabled(stack_with_tool, saver):
+    """The Phase 10 bug report, pinned: the assistant enabled a tool the user had
+    deliberately switched off."""
+    registry, _runtime = stack_with_tool
+    registry.deactivate("splice_site")
+    _model, graph = _graph(stack_with_tool, _toggle_script("activate_tool", "splice_site"), saver)
+
+    graph.invoke({"messages": [HumanMessage(content="enable it")]}, CONFIG)
+    final = graph.invoke(Command(resume={"approved": False, "note": "leave it off"}), CONFIG)
+
+    assert registry.get("splice_site").state == "disabled"
+
+    tool_messages = [m for m in final["messages"] if isinstance(m, ToolMessage)]
+    assert "declined" in tool_messages[0].content
+    assert "Do not retry" in tool_messages[0].content
+
+
+def test_approving_activation_flips_the_tool(stack_with_tool, saver):
+    registry, _runtime = stack_with_tool
+    registry.deactivate("splice_site")
+    _model, graph = _graph(stack_with_tool, _toggle_script("activate_tool", "splice_site"), saver)
+
+    graph.invoke({"messages": [HumanMessage(content="enable it")]}, CONFIG)
+    graph.invoke(Command(resume={"approved": True}), CONFIG)
+
+    assert registry.get("splice_site").state == "active"
+
+
+def test_deactivation_is_gated_too(stack_with_tool, saver):
+    """Symmetry matters: an agent that can silently disable a tool can break a workflow
+    just as effectively as one that can silently enable it."""
+    registry, _runtime = stack_with_tool
+    _model, graph = _graph(stack_with_tool, _toggle_script("deactivate_tool", "splice_site"), saver)
+
+    result = graph.invoke({"messages": [HumanMessage(content="turn it off")]}, CONFIG)
+
+    assert "__interrupt__" in result
+    request = result["__interrupt__"][0].value["requests"][0]
+    assert request["summary"] == "Disable the tool 'splice_site' (currently active)"
+    assert registry.get("splice_site").state == "active"
+
+
+def test_the_gate_survives_an_unknown_tool_name(stack_with_tool, saver):
+    """`_summarize` reads the registry to name the current state; a hallucinated tool name
+    must still produce a renderable request, not a crash inside the gate."""
+    _model, graph = _graph(stack_with_tool, _toggle_script("activate_tool", "no_such_tool"), saver)
+
+    result = graph.invoke({"messages": [HumanMessage(content="enable it")]}, CONFIG)
+
+    request = result["__interrupt__"][0].value["requests"][0]
+    assert request["details"]["current_state"] == "unknown"
+
+
 def test_gate_interrupts_before_the_tool_runs(stack, saver, tmp_path):
     plan = fake_plan(tmp_path)
     _model, graph = _graph(stack, _training_script(plan), saver)

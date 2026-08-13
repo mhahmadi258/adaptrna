@@ -75,8 +75,13 @@ export const api = {
   jobAnalysis: (id) => request(`/api/jobs/${path(id)}/analysis`),
   cancelJob: (id) => request(`/api/jobs/${path(id)}/cancel`, { method: "POST" }),
 
+  // `[{id, updated_at, checkpoints}]`, newest first — the rail renders it in that order.
   sessions: () => request("/api/sessions"),
   history: (id) => request(`/api/sessions/${path(id)}/history`),
+  createSession: (id) => request("/api/sessions", { method: "POST", body: { id } }),
+  renameSession: (id, next) =>
+    request(`/api/sessions/${path(id)}`, { method: "PATCH", body: { id: next } }),
+  deleteSession: (id) => request(`/api/sessions/${path(id)}`, { method: "DELETE" }),
 };
 
 /** One turn. Ends on `done`, or on `approval_required` — which suspends it. */

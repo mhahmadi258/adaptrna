@@ -95,8 +95,9 @@ stateDiagram-v2
 
 The system prompt is worth reading in full ([source](../../agentic/adaptrna_agentic/agents/orchestrator.py));
 its load-bearing instructions are: use tools for any prediction, never guess sequence
-properties; report probabilities as probabilities; offer `activate_tool` for a disabled
-tool; **never invent hyperparameters** — present the knowledge base's reasons rather than
+properties; report probabilities as probabilities; **which tools are enabled is the
+user's decision, not yours** — a disabled tool is a deliberate choice, never work around
+it; **never invent hyperparameters** — present the knowledge base's reasons rather than
 your own; if the user declines a gated action, say so plainly and do not retry; never
 present a truncated smoke run as a real result.
 
@@ -119,8 +120,22 @@ again rather than inheriting an earlier "yes".
 
 ## 4. The approval gate
 
-`GATED_TOOLS = ("start_training", "register_trained_adapter", "land_generated_code")` —
-GPU hours, a new servable tool, and code written into your repository.
+```python
+GATED_TOOLS = ("start_training", "register_trained_adapter", "land_generated_code",
+               "activate_tool", "deactivate_tool")
+```
+
+GPU hours, a new servable tool, code written into your repository — and, added in Phase 10,
+changing which tools the assistant may run at all.
+
+That last pair is gated for a different reason than the other three. Training and codegen
+are gated for **cost and blast radius**: they are expensive, slow, or hard to undo. Enabling
+a tool is none of those — it is instant, free and trivially reversible. It is gated for
+**authority**: the switch is how the user says which capabilities they trust, so flipping it
+is theirs to do. An assistant that re-enables a tool in order to get on with a task has
+overruled the person it works for, which is why the fix was a gate and not a better prompt
+(though the prompt changed too — the gate stops the action, the prompt has to stop the
+intent, or every disabled tool becomes an unrequested modal).
 
 **The gate is a dedicated node, not an `interrupt()` inside a tool.** From the module
 docstring:
@@ -166,10 +181,15 @@ runtime)` returns 16 management tools plus one tool per registered entry.
 ### Binding policy
 
 **Every registered tool is bound, including disabled ones** — a disabled entry carries
-`" (currently DISABLED — call activate_tool('<name>') first.)"` appended to its description,
-and *execution* enforces state at call time through the shared registry. That is what lets
-the model activate a tool and use it within the same turn, and the refusal message teaches
-it the activate-first lifecycle.
+`" (currently DISABLED — only the user can enable it. You may offer to ask them, which is
+what activate_tool('<name>') does; it does not switch the tool on by itself.)"` appended to
+its description, and *execution* enforces state at call time through the shared registry.
+
+Phase 4 bound everything so the model could activate a tool and use it in the same turn.
+**Phase 10 reversed that**: everything is still bound, but for a different reason. The model
+needs to see a disabled tool in order to *mention* it — "vienna_fold is off, shall I ask you
+to enable it?" — and the refusal it gets on calling one now says who owns the switch instead
+of teaching an activate-first lifecycle. Bound so it can ask; enforced so it cannot act.
 
 Adapter tool descriptions also gain an output note so the model knows what it will get:
 
@@ -183,7 +203,7 @@ sec_struct  → "Returns one base-pairing matrix per sequence (large output)."
 
 | Group | Tools | Backed by |
 |---|---|---|
-| Lifecycle | `list_tools`, `tool_info`, `activate_tool`, `deactivate_tool`, `test_tool` | `Registry`, `AdapterRuntime.smoke_test`, `contract.run_golden` |
+| Lifecycle | `list_tools`, `tool_info`, **`activate_tool`**, **`deactivate_tool`**, `test_tool` | `Registry`, `AdapterRuntime.smoke_test`, `contract.run_golden` |
 | Pipeline | `profile_dataset`, `recommend_training_config`, **`start_training`**, `job_status`, `list_jobs`, `analyze_run`, **`register_trained_adapter`** | [profiling](profiling-and-knowledge.md), [jobs](jobs.md) |
 | Codegen | `create_task_tool`, `create_external_tool`, `list_staged_code`, **`land_generated_code`** | [codegen](codegen.md) |
 

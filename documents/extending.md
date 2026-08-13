@@ -119,17 +119,29 @@ Conventions that matter:
 
 ## Gate a new action behind approval
 
-Anything that spends money, changes the world outside the process, or adds a servable
-capability should be gated.
+Anything that spends money, changes the world outside the process, adds a servable
+capability, or **changes what the assistant is allowed to do** should be gated.
+
+That last category is worth naming separately, because it is the one that is easy to miss.
+`activate_tool` is cheap, instant and trivially reversible — none of the usual reasons to
+gate apply — yet it is gated, because the tool switches are how the user states which
+capabilities they trust. An assistant that flipped one to unblock itself had overruled the
+person it works for (Phase 10). When judging a new action, ask about **authority** as well as
+cost.
 
 1. Add the tool name to `GATED_TOOLS` in `tool_factory.py`.
 2. Add a branch to `orchestrator._summarize` — one line saying what approving it will do.
 3. Add a branch to `orchestrator._details` — **everything the human needs to judge it**: the
-   exact command, the file list, the diff. Not a paraphrase.
+   exact command, the file list, the diff, the before-and-after state. Not a paraphrase.
+   `_summarize` and `_details` both take the `Registry` if the request needs to name current
+   state, as the tool toggles do.
 4. Render the new detail fields in `cli/chat.py::_prompt_approval` and in
    `ui/render.js::approvalBody`.
 5. Pin the field names in `test_ui_contract.py`, and assert the **absence of the side
-   effect** at the interrupt in `test_approval_gate.py`.
+   effect** at the interrupt in `test_approval_gate.py` — and that a *decline* leaves the
+   world unchanged, which is the assertion that catches a gate wired to the wrong node.
+6. Update the prompt too. The gate stops the action; only the prompt stops the intent, and a
+   model that keeps proposing a gated action produces modals the user never asked for.
 
 Do not put `interrupt()` inside the tool. The tools node runs every call of a turn in one
 pass, so a resume would re-execute the ones that already completed; the dedicated node is

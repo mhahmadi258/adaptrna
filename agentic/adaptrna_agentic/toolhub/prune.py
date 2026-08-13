@@ -234,7 +234,7 @@ def _run_candidates(registry, jobs_dir, older_than) -> List[Candidate]:
 
 def _remove(candidate: Candidate) -> None:
     if candidate.data.get("thread_id"):
-        _delete_session(candidate.data["thread_id"])
+        delete_session(candidate.data["thread_id"])
         return
     if candidate.data.get("job_id"):
         _delete_job(candidate.data["job_id"])
@@ -249,13 +249,20 @@ def _remove(candidate: Candidate) -> None:
         path.unlink()
 
 
-def _delete_session(thread_id: str) -> None:
+def delete_session(thread_id: str, db_path=None) -> None:
+    """Remove every trace of a chat session.
+
+    Public because Phase 10 gave the API a session-delete endpoint and it must not grow a
+    second copy of this SQL: one deletion path, covered by `test_prune.py`. `db_path` is
+    the test/injection seam; the CLI never passes it.
+    """
     import sqlite3
 
     from adaptrna_agentic.cli.chat import chat_db_path
 
-    connection = sqlite3.connect(chat_db_path())
+    connection = sqlite3.connect(db_path or chat_db_path())
     try:
+        connection.execute("PRAGMA busy_timeout=5000")
         for table in ("checkpoints", "writes", "checkpoint_blobs"):
             try:
                 connection.execute(f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,))

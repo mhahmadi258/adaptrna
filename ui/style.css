@@ -65,8 +65,7 @@ body {
 .brand { font-weight: 650; letter-spacing: -0.01em; }
 .brand span { color: var(--accent); }
 
-.session { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
-.session label { color: var(--ink-faint); font-size: 0.85rem; }
+.rail-toggle { font-size: 1rem; line-height: 1; padding: 0.25rem 0.5rem; }
 
 select {
   font: inherit;
@@ -98,13 +97,111 @@ select {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22rem;
+  /* `--rail-w` is set on :root by the drag handle and restored from localStorage. */
+  grid-template-columns: var(--rail-w, 15rem) minmax(0, 1fr) 22rem;
 }
+
+body.rail-collapsed { --rail-w: 0px; }
+body.rail-collapsed .rail { border-right: none; }
 
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
   .side { border-left: none; border-top: 1px solid var(--line); max-height: 45vh; }
+
+  /* Narrow screens have no column to spare, so the rail overlays the chat instead of
+     squeezing it — and the toggle in the topbar is how you dismiss it again. */
+  .rail {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: min(80vw, 18rem);
+    z-index: 20;
+    box-shadow: 0 0 2rem rgba(0, 0, 0, 0.25);
+  }
+  body.rail-collapsed .rail { display: none; }
+  .rail-grip { display: none; }
 }
+
+/* ------------------------------------------------------------------ rail */
+
+.rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;         /* so a collapse to 0 clips rather than reflows the content */
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.rail-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+.rail-new { width: 100%; }
+.rail-filter {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.45rem;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.rail-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0.35rem; }
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.session-row:hover { background: var(--bg); }
+.session-row.is-current { background: var(--bg); box-shadow: inset 2px 0 0 var(--accent); }
+
+.session-open {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.session-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-when { display: block; font-size: 0.75rem; color: var(--ink-faint); }
+
+/* Row actions stay out of the way until the row is hovered or keyboard-focused. */
+.session-actions { display: flex; gap: 0.15rem; opacity: 0; transition: opacity 0.1s; }
+.session-row:hover .session-actions,
+.session-row:focus-within .session-actions { opacity: 1; }
+.session-actions .btn { padding: 0.1rem 0.3rem; font-size: 0.75rem; }
+
+.rail-grip {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.rail-grip:hover, .rail-grip:focus-visible { background: var(--accent); outline: none; }
+body.rail-resizing { cursor: col-resize; user-select: none; }
 
 /* ------------------------------------------------------------------ chat */
 
@@ -222,6 +319,10 @@ select {
 }
 
 .thinking { display: flex; gap: 0.3rem; padding: 0 1.5rem 0.5rem; }
+/* An author-origin `display` beats the user agent's `[hidden] { display: none }` whatever
+   the specificity, so the rule above painted the dots from page load onward and `hidden`
+   did nothing. Any element this stylesheet gives a `display` to and JS hides needs this. */
+.thinking[hidden] { display: none; }
 .thinking span {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--ink-faint);

@@ -44,6 +44,19 @@ code change. No module imports `langchain_anthropic` directly.
 The three roles are fixed: `ROLES = ("orchestrator", "toolsmith", "verifier")`. Everything
 else in the platform is a deterministic service and never talks to a model.
 
+### Browser-side storage
+
+Not configuration you set, but state the web client keeps per browser:
+
+| Key | Store | Holds |
+|---|---|---|
+| `adaptrna.token` | `sessionStorage` | The bearer token, when the server requires one. **`sessionStorage` on purpose** — it dies with the tab rather than outliving it on disk. |
+| `adaptrna.rail.width` | `localStorage` | Session rail width, in `rem` (clamped 10–30) |
+| `adaptrna.rail.collapsed` | `localStorage` | Whether the rail is hidden |
+
+The split is deliberate: a credential that survives the tab is a hazard, a sidebar width that
+resets on every tab is an annoyance.
+
 Set inside the sandbox for generated code, not by you
 ([`codegen/sandbox.py`](../agentic/adaptrna_agentic/codegen/sandbox.py)):
 `CUDA_VISIBLE_DEVICES=""`, `PYTHONDONTWRITEBYTECODE=1`, `TOKENIZERS_PARALLELISM=false`,

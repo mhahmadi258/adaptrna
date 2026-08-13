@@ -70,7 +70,33 @@ def test_disabled_capability_returns_refusal_as_result(loaded):
     result = tools["dummy_echo"].invoke({"value": "hi"})
 
     assert isinstance(result, str)
-    assert "activate_tool" in result
+    assert "disabled" in result
+    # Phase 10: the refusal must not read as an instruction to fix it yourself. It used to
+    # say "Call activate_tool('dummy_echo') first", which is exactly what the model then did.
+    assert "Only the user can enable it" in result
+    assert "Call activate_tool" not in result
+
+
+def test_the_disabled_note_does_not_tell_the_model_to_self_activate(loaded):
+    """The description a disabled tool carries is the other half of the same lesson."""
+    registry, runtime = loaded
+    registry.deactivate("dummy_echo")
+    tools = _by_name(registry, runtime)
+
+    description = tools["dummy_echo"].description
+
+    assert "DISABLED" in description
+    assert "only the user can enable it" in description.lower()
+    assert "call activate_tool" not in description.lower()
+
+
+def test_tool_state_changes_are_gated(loaded):
+    """Both toggles are approval-gated — the enforcement lives in the graph, but the
+    membership is what every front end reads to know a modal is coming."""
+    from adaptrna_agentic.agents.tool_factory import GATED_TOOLS
+
+    assert "activate_tool" in GATED_TOOLS
+    assert "deactivate_tool" in GATED_TOOLS
 
 
 def test_unknown_name_comes_back_as_message_not_exception(loaded):

@@ -33,9 +33,11 @@ def test_all_pipeline_tools_are_bound(tools):
 
 
 def test_only_consequential_tools_are_gated():
-    # GPU hours, a new servable tool, and writing code into the repository.
+    # GPU hours, a new servable tool, writing code into the repository — and, gated for
+    # authority rather than cost, changing which tools the assistant may run at all.
     assert set(GATED_TOOLS) == {
         "start_training", "register_trained_adapter", "land_generated_code",
+        "activate_tool", "deactivate_tool",
     }
 
 

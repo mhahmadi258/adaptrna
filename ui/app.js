@@ -18,11 +18,21 @@ const JOB_POLL_MS = 3000;
 //: into frames rather than repainting per delta.
 const MARKDOWN_REPAINT_MS = 80;
 
+//: Rail geometry is chrome for *this browser*, not server state, so it belongs in
+//: localStorage — deliberately unlike the auth token, which uses sessionStorage so it dies
+//: with the tab. A width that reset on every tab would just be an annoyance.
+const RAIL_WIDTH_KEY = "adaptrna.rail.width";
+const RAIL_COLLAPSED_KEY = "adaptrna.rail.collapsed";
+const RAIL_MIN_REM = 10;
+const RAIL_MAX_REM = 30;
+
 const state = {
   session: null,
   pending: null, // the approval request the graph is suspended on, if any
   streaming: false,
   jobsTimer: null,
+  sessions: [], // the last fetched list, so filtering does not need a round trip
+  filter: "",
 };
 
 // ------------------------------------------------------------------ chat
@@ -42,8 +52,19 @@ function setBusy(busy) {
   state.streaming = busy;
   $("composer-send").disabled = busy;
   $("composer-input").disabled = busy;
-  $("thinking").hidden = !busy;
+  setThinking(busy);
   if (!busy) $("composer-input").focus();
+}
+
+/**
+ * The dots mean "waiting on the model", not "a stream is open".
+ *
+ * Spanning the whole turn made them least informative exactly when the answer was already
+ * arriving, so `consume()` turns them off on the first token and back on before a tool
+ * call. `setBusy` still owns `state.streaming` and the composer.
+ */
+function setThinking(thinking) {
+  $("thinking").hidden = !thinking;
 }
 
 /**
@@ -73,6 +94,7 @@ async function consume(run) {
   const closeBubble = () => {
     if (bubble) paint(true);
     bubble = null;
+    setThinking(true); // whatever comes next, we are waiting on the model again
   };
 
   await run(({ event, data }) => {
@@ -83,6 +105,7 @@ async function consume(run) {
           markdown = "";
           painted = 0; // so the first token of a new bubble paints immediately
           append(bubble.node);
+          setThinking(false); // the answer is arriving; the dots have nothing left to say
         }
         markdown += data.delta || "";
         paint(false);
@@ -317,24 +340,162 @@ async function refreshSessions(select = null) {
   try {
     sessions = await api.sessions();
   } catch {
-    /* an empty picker is survivable; the session still works */
+    /* an empty rail is survivable; the open session still works */
   }
 
   const current = select || state.session;
-  if (current && !sessions.includes(current)) sessions = [current, ...sessions];
+  if (current && !sessions.some((s) => s.id === current)) {
+    sessions = [{ id: current, updated_at: null, checkpoints: 0 }, ...sessions];
+  }
 
-  const picker = ui.clear($("session-picker"));
-  for (const name of sessions) {
-    picker.append(ui.el("option", { value: name, selected: name === current }, name));
+  state.sessions = sessions;
+  renderSessions();
+}
+
+/** Pure render from `state.sessions` + `state.filter`, so typing in the filter is local. */
+function renderSessions() {
+  const needle = state.filter.trim().toLowerCase();
+  const shown = needle
+    ? state.sessions.filter((s) => s.id.toLowerCase().includes(needle))
+    : state.sessions;
+
+  const list = ui.clear($("rail-list"));
+  if (!shown.length) {
+    list.append(ui.noticeMessage(needle ? "No matching sessions." : "No sessions yet."));
+    return;
+  }
+
+  for (const session of shown) {
+    list.append(ui.sessionRow(session, sessionHandlers, session.id === state.session));
   }
 }
 
+/** A mutation mid-turn would race the stream that is writing to the same thread. */
+function busyWithATurn() {
+  if (state.streaming || state.pending) {
+    showInspector("sessions", "Finish the current turn first.");
+    return true;
+  }
+  return false;
+}
+
+const sessionHandlers = {
+  select: (id) => {
+    if (id === state.session || busyWithATurn()) return;
+    loadSession(id).then(renderSessions);
+  },
+
+  rename: async (id) => {
+    if (busyWithATurn()) return;
+
+    const next = (window.prompt(`Rename '${id}' to:`, id) || "").trim();
+    if (!next || next === id) return;
+
+    try {
+      await api.renameSession(id, next);
+    } catch (error) {
+      return showInspector(`rename ${id}`, error.message);
+    }
+
+    // The messages did not move, only the key they are under — so re-point rather than
+    // reloading the log from /history.
+    if (state.session === id) state.session = next;
+    await refreshSessions();
+  },
+
+  remove: async (id) => {
+    if (busyWithATurn()) return;
+    if (!window.confirm(`Delete session '${id}'? This cannot be undone.`)) return;
+
+    try {
+      await api.deleteSession(id);
+    } catch (error) {
+      return showInspector(`delete ${id}`, error.message);
+    }
+
+    const wasOpen = state.session === id;
+    state.sessions = state.sessions.filter((s) => s.id !== id);
+
+    if (wasOpen) {
+      await loadSession(state.sessions[0]?.id || "default");
+    }
+    await refreshSessions();
+  },
+};
+
 async function newSession() {
+  if (busyWithATurn()) return;
+
   const name = (window.prompt("Name for the new session:", suggestName()) || "").trim();
   if (!name) return;
 
-  await refreshSessions(name);
+  try {
+    await api.createSession(name);
+  } catch (error) {
+    return showInspector("new session", error.message);
+  }
+
   await loadSession(name);
+  await refreshSessions(name);
+}
+
+// ------------------------------------------------------------------ rail chrome
+
+function setRailCollapsed(collapsed) {
+  document.body.classList.toggle("rail-collapsed", collapsed);
+  $("rail-toggle").setAttribute("aria-expanded", String(!collapsed));
+  localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
+}
+
+function setRailWidth(rem) {
+  const clamped = Math.min(RAIL_MAX_REM, Math.max(RAIL_MIN_REM, rem));
+  document.documentElement.style.setProperty("--rail-w", `${clamped}rem`);
+  localStorage.setItem(RAIL_WIDTH_KEY, String(clamped));
+}
+
+function installRail() {
+  const stored = parseFloat(localStorage.getItem(RAIL_WIDTH_KEY));
+  if (!Number.isNaN(stored)) setRailWidth(stored);
+  setRailCollapsed(localStorage.getItem(RAIL_COLLAPSED_KEY) === "1");
+
+  $("rail-toggle").addEventListener("click", () =>
+    setRailCollapsed(!document.body.classList.contains("rail-collapsed")));
+
+  $("rail-new").addEventListener("click", newSession);
+  $("rail-filter").addEventListener("input", (event) => {
+    state.filter = event.target.value;
+    renderSessions();
+  });
+
+  const grip = $("rail-grip");
+  const rootFontSize = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+
+  grip.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    document.body.classList.add("rail-resizing");
+
+    const onMove = (move) => setRailWidth(move.clientX / rootFontSize);
+    const onUp = () => {
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("rail-resizing");
+    };
+
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onUp);
+  });
+
+  // Keyboard-reachable too: the grip is focusable, so arrows resize it.
+  grip.addEventListener("keydown", (event) => {
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const current = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--rail-w")
+    ) || 15;
+    setRailWidth(current + step);
+  });
 }
 
 function suggestName() {
@@ -388,8 +549,7 @@ async function boot() {
   $("approval-approve").addEventListener("click", () => decide(true));
   $("approval-decline").addEventListener("click", () => decide(false));
   $("inspector-close").addEventListener("click", () => ($("inspector").hidden = true));
-  $("session-new").addEventListener("click", newSession);
-  $("session-picker").addEventListener("change", (event) => loadSession(event.target.value));
+  installRail();
   $("health").addEventListener("click", async () => {
     try {
       const report = await api.doctor();
@@ -406,10 +566,12 @@ async function boot() {
   }
 
   const sessions = await api.sessions().catch(() => []);
-  const initial = new URLSearchParams(location.search).get("session") || sessions[0] || "default";
+  const initial =
+    new URLSearchParams(location.search).get("session") || sessions[0]?.id || "default";
 
-  await refreshSessions(initial);
+  // loadSession first: `state.session` is what marks the current row in the rail.
   await loadSession(initial);
+  await refreshSessions(initial);
   refreshPanels();
 
   $("composer-input").focus();

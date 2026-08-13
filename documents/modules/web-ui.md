@@ -16,9 +16,10 @@ Served by the API at `/` — open a running server, or launch one with
 4. [`api.js`](#4-apijs)
 5. [`app.js` — wiring and state](#5-appjs--wiring-and-state)
 6. [`render.js`, `md.js`, `dom.js`](#6-renderjs-mdjs-domjs)
-7. [Two behaviours worth knowing before editing](#7-two-behaviours-worth-knowing-before-editing)
-8. [How the client is tested](#8-how-the-client-is-tested)
-9. [Assumptions and limitations](#9-assumptions-and-limitations)
+7. [The session rail](#7-the-session-rail)
+8. [Two behaviours worth knowing before editing](#8-two-behaviours-worth-knowing-before-editing)
+9. [How the client is tested](#9-how-the-client-is-tested)
+10. [Assumptions and limitations](#10-assumptions-and-limitations)
 
 ---
 
@@ -48,14 +49,14 @@ switching costs the client alone.
 
 | File | Lines | What it does |
 |---|---:|---|
-| `index.html` | 70 | The shell: topbar (brand, health badge, session picker), chat column, tools/jobs/inspector sidebar, and the approval modal skeleton. Loads `/ui/app.js` as a module. |
-| `app.js` | 418 | Wiring — panels, session picker, job polling, the event dispatch for a turn |
+| `index.html` | 78 | The shell: topbar (rail toggle, brand, health badge), session rail, chat column, tools/jobs/inspector sidebar, and the approval modal skeleton. Loads `/ui/app.js` as a module. |
+| `app.js` | 580 | Wiring — the session rail, panels, job polling, the event dispatch for a turn |
 | `sse.js` | 105 | SSE over `fetch`: a pure frame parser plus a thin transport |
-| `api.js` | 109 | The endpoints as functions, and the bearer token when one is configured |
-| `render.js` | 263 | Messages, tool rows, job rows, test/analysis reports, the approval modal body |
+| `api.js` | 114 | The endpoints as functions, and the bearer token when one is configured |
+| `render.js` | 316 | Messages, session rows, tool rows, job rows, test/analysis reports, the approval modal body |
 | `md.js` | 180 | A small Markdown renderer — the model writes tables, and raw pipes are unreadable |
 | `dom.js` | 34 | The shared `el()` / `clear()` helpers |
-| `style.css` | 431 | One stylesheet, light and dark |
+| `style.css` | 532 | One stylesheet, light and dark |
 
 ## 3. `sse.js` — the only real client logic
 
@@ -90,6 +91,7 @@ api.health() api.doctor()
 api.tools() api.tool(n) api.activate(n) api.deactivate(n) api.testTool(n) api.predict(n, seqs)
 api.jobs() api.job(id) api.jobLogs(id, tail) api.jobAnalysis(id) api.cancelJob(id)
 api.sessions() api.history(id)
+api.createSession(id) api.renameSession(id, next) api.deleteSession(id)
 sendMessage(session, text, onEvent)              // SSE
 resumeSession(session, approved, note, onEvent)  // SSE
 ```
@@ -108,7 +110,7 @@ The server holds all the domain state, so this file keeps only what is genuinely
 browser tab*:
 
 ```js
-const state = { session, pending, streaming, jobsTimer };
+const state = { session, pending, streaming, jobsTimer, sessions, filter };
 ```
 
 ### `consume(run)` — the event dispatch
@@ -151,9 +153,13 @@ The `catch` branch is load-bearing and carries the reason in a comment:
 
 ### Boot sequence
 
-`refreshHealth()` → `ensureAuth()` (prompts for a token only on a 401, then retries) →
-pick the session from `?session=`, else the first existing, else `default` →
-`refreshSessions` → `loadSession` → `refreshPanels`.
+`installRail()` (restores width/collapsed from `localStorage`) → `refreshHealth()` →
+`ensureAuth()` (prompts for a token only on a 401, then retries) → pick the session from
+`?session=`, else the newest existing, else `default` → `loadSession` → `refreshSessions` →
+`refreshPanels`.
+
+`loadSession` runs **before** `refreshSessions`: `state.session` is what marks the current
+row in the rail, so rendering the list first would leave nothing highlighted.
 
 `refreshHealth` counts `failed_checks` rather than testing it, because **an empty array is
 truthy in JS**. Clicking the badge opens the full doctor report in the inspector.
@@ -178,7 +184,49 @@ later lines have arrived, so there is nothing to append *to* until the block is 
 and **tables**, which is the reason it exists (the model writes tables, and raw pipes are
 unreadable).
 
-## 7. Two behaviours worth knowing before editing
+## 7. The session rail
+
+A resizable, collapsible left column listing every session newest-first, with create, rename,
+delete and a filter box. It replaced the top-bar `<select>` in Phase 10.
+
+```
+aside#rail
+├── .rail-head    #rail-new (＋ New session) · #rail-filter
+├── #rail-list    .session-row × n  — name, relative time, ✎ rename, 🗑 delete
+└── #rail-grip    4px drag handle on the right edge
+```
+
+**Filtering is local.** `state.sessions` holds the last fetched list and `renderSessions()`
+is a pure render of it plus `state.filter`, so typing does not hit the server.
+
+**Geometry lives in `localStorage`** (`adaptrna.rail.width`, `adaptrna.rail.collapsed`),
+deliberately unlike the auth token's `sessionStorage`. A token that outlives the tab is a
+hazard; a sidebar width that resets on every tab is just an annoyance. The width is written
+as a `--rail-w` custom property on `:root`, which `.layout`'s grid reads — so the drag handle
+touches one property and the browser does the layout.
+
+**Mutations are refused mid-turn.** Rename and delete move or destroy the rows a streaming
+turn is writing to, so all three handlers bail out through `busyWithATurn()` when
+`state.streaming` or `state.pending` is set.
+
+**A new session is created server-side before it is opened**, because a thread only appears
+in the listing once it has a checkpoint. `POST /api/sessions` seeds an empty one; without
+that, a session created in the rail would vanish on the next refresh.
+
+## 8. Two behaviours worth knowing before editing
+
+### `[hidden]` loses to an author `display`
+
+The thinking dots animated permanently for the whole of Phase 9. `app.js` set
+`$("thinking").hidden` correctly the entire time — but `style.css` said
+`.thinking { display: flex }`, and an **author-origin** `display` beats the user agent's
+`[hidden] { display: none }` whatever the specificity. The element was painted regardless of
+the attribute. Any element this stylesheet gives a `display` to and JS hides needs an
+explicit `[hidden]` rule; `.thinking[hidden] { display: none; }` is the one that exists.
+
+The dots now also mean something narrower: "waiting on the model", not "a stream is open".
+`consume()` turns them off on the first `text` delta and back on in `closeBubble()`, so they
+are dark while an answer is streaming and lit while a tool call is in flight.
 
 ### The approval round trip is three steps
 
@@ -195,7 +243,7 @@ if (body.pending_approval) { state.pending = …; showApproval(…); }
 `GET /api/sessions/{id}/history` carries `pending_approval` precisely so the dialog can come
 back after a reload. The suspended turn lives in the checkpointer, not in the tab.
 
-## 8. How the client is tested
+## 9. How the client is tested
 
 Three suites, in increasing cost:
 
@@ -212,16 +260,18 @@ cd agentic
 ../.venv/bin/python -m pytest -m ui
 ```
 
-## 9. Assumptions and limitations
+## 10. Assumptions and limitations
 
 * **Same-origin only.** No CORS configuration; the client assumes it is served by the API.
 * **One session at a time per tab.** Switching sessions reloads the log from `/history`.
-* **No client-side domain state** — by design. Everything rendered comes from the server on
-  each refresh.
+* **Almost no client-side domain state.** Everything rendered comes from the server. Phase
+  10 added the first exceptions — `state.sessions` (so filtering is local) and the rail's
+  persisted geometry — which is why §1's framework tripwire is now flagged rather than
+  comfortably clear.
 * **The token prompt is a `window.prompt`.** Adequate for a single-user loopback tool; not a
   login flow.
-* **No delete affordances**, because the API has no delete surface. Removing a tool or
-  pruning is a CLI action.
+* **The only delete affordance is for sessions** (Phase 10), behind a `window.confirm` and
+  irreversible. Removing a tool, pruning artifacts or deleting a job is still a CLI action.
 * **`md.js` is not a complete Markdown implementation.** It covers what the model actually
   writes; unusual constructs render as text.
 * **Job logs are fetched with `tail=200`** from the inspector, not streamed.

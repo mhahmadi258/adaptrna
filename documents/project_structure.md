@@ -192,7 +192,8 @@ agentic/
 
 | File | Responsibility | Depended on by |
 |---|---|---|
-| `agents/tool_factory.py` | The single meeting point of the LLM and the deterministic services. Defines the 16 management tools, wraps every registered tool, and names the gated set. | orchestrator, every test of agent behaviour |
+| `agents/tool_factory.py` | The single meeting point of the LLM and the deterministic services. Defines the 16 management tools, wraps every registered tool, and names the gated set — which since Phase 10 includes the two tool-state toggles. | orchestrator, every test of agent behaviour |
+| `api/sessions_store.py` | Sessions as a managed resource: recency listing and rename, in plain SQL over the checkpointer's own tables. Owns no schema — a sidecar metadata table would be a second source of truth the terminal never writes. | `api/routers/sessions.py`, the web UI's session rail |
 | `toolhub/manifest.py` | The on-disk truth about what tools exist. Pure data + JSON I/O; never imports the engine. | registry, runtime, doctor, prune, recommender, API |
 | `toolhub/runtime.py` | The only place a backbone is ever loaded in this layer, and the only place inference is serialised. | chat, CLI, HTTP, harness-adjacent code |
 | `profiling/recommender.py` | Turns a profile into an *executable, stamped* plan — including the exact argv. | `start_training`, the approval gate, tests that parse the command with the engine's own parser |
@@ -240,16 +241,18 @@ fails to import is reported by name and does not break the others.
 ui/
 ├── README.md     [doc]  why no build step, and the tripwire for changing that
 ├── index.html           the shell: layout + modal skeleton; loads /ui/app.js as a module
-├── app.js        (418)  wiring: panels, session picker, job polling, event dispatch
+├── app.js        (580)  wiring: the session rail, panels, job polling, event dispatch
 ├── sse.js        (105)  SSE over fetch — a pure frame parser plus a thin transport
-├── api.js        (109)  endpoints as functions; bearer token in sessionStorage
-├── render.js     (263)  messages, tool rows, job rows, the approval modal
+├── api.js        (114)  endpoints as functions; bearer token in sessionStorage
+├── render.js     (316)  messages, session rows, tool rows, job rows, the approval modal
 ├── md.js         (180)  small Markdown renderer (the model writes tables)
 ├── dom.js        (34)   the shared el() helper; nothing here assigns innerHTML
-└── style.css     (431)  one stylesheet, light and dark
+└── style.css     (532)  one stylesheet, light and dark
 ```
 
-1,610 lines total, 1,109 of them JavaScript. Served by
+1,939 lines total, 1,329 of them JavaScript — past the thousand-line tripwire `README.md`
+sets for reaching for a framework, and now carrying a little client-side state as well. See
+that file for the accounting. Served by
 [`api/routers/ui.py`](../agentic/adaptrna_agentic/api/routers/ui.py): the shell at `/` with
 `Cache-Control: no-store`, the assets mounted at `/ui` (not `/`, which would shadow `/api`
 and `/health`). If the package is installed away from its checkout, `/` returns a 503 page

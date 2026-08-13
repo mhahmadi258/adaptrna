@@ -10,16 +10,24 @@
 <body>
 
 <header class="topbar">
+  <button id="rail-toggle" class="btn btn-quiet rail-toggle" type="button"
+          aria-controls="rail" aria-expanded="true" title="Show or hide the session list">☰</button>
   <div class="brand">Adapt<span>RNA</span></div>
   <button id="health" class="badge" type="button" title="Install health">checking…</button>
-  <div class="session">
-    <label for="session-picker">session</label>
-    <select id="session-picker"></select>
-    <button id="session-new" class="btn btn-quiet" type="button" title="Start a new session">new</button>
-  </div>
 </header>
 
 <main class="layout">
+
+  <aside class="rail" id="rail" aria-label="Sessions">
+    <div class="rail-head">
+      <button id="rail-new" class="btn btn-primary rail-new" type="button">＋ New session</button>
+      <input id="rail-filter" class="rail-filter" type="search" placeholder="Filter sessions…"
+             aria-label="Filter sessions">
+    </div>
+    <div id="rail-list" class="rail-list"></div>
+    <div id="rail-grip" class="rail-grip" role="separator" aria-orientation="vertical"
+         aria-label="Resize the session list" tabindex="0"></div>
+  </aside>
 
   <section class="chat" aria-label="Chat">
     <div id="chat-log" class="chat-log"></div>

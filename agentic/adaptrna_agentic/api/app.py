@@ -5,8 +5,11 @@ implementation to drift. What it adds is a second *front end*, sharing sessions 
 terminal through the same checkpointer, which is what Phase 9's browser UI talks to (it is
 served from `/`, and is a pure client of the endpoints below).
 
-Deliberately absent: any delete surface. Phase 7 kept deletion a human action at the CLI,
-and an HTTP endpoint is a weaker boundary than a shell prompt.
+The only thing deletable here is a session (Phase 10). Everything else — tools, artifacts,
+jobs, runs, staged code — stays a human action at the CLI, because for expensive and
+hard-to-reproduce things a shell prompt really is a better boundary than a button. A
+conversation is neither, and hiding it behind `prune sessions --older-than N` was friction
+without safety. The *agent* still cannot delete anything at all.
 """
 
 from typing import Optional

@@ -111,6 +111,9 @@ def _prompt_approval(request) -> dict:
     for item in request.get("requests", []):
         print(f"  │ {item['summary']}")
         details = item.get("details") or {}
+        if details.get("tool"):
+            print(f"  │   tool:      {details['tool']}")
+            print(f"  │   state:     {details['current_state']} → {details['after_approval']}")
         if details.get("command"):
             print(f"  │   would run: {' '.join(details['command'])}")
         if details.get("output_dir"):

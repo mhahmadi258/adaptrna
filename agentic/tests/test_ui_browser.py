@@ -294,15 +294,98 @@ def test_history_is_restored_on_reload(page):
     assert "scripted model" in page.inner_text(".msg-assistant")
 
 
-def test_a_terminal_session_appears_in_the_picker(page):
-    """The two front ends are one system: the picker is fed by the shared checkpointer."""
+def test_a_terminal_session_appears_in_the_rail(page):
+    """The two front ends are one system: the rail is fed by the shared checkpointer."""
     page, base, _ = page
-    _open(page, base, "browser_picker")
+    _open(page, base, "browser_rail")
     _say(page, "hello")
     page.wait_for_selector(".msg-assistant")
 
     page.goto(f"{base}/")
-    # `<option>` is never "visible" to Playwright, so wait on the count instead.
-    page.wait_for_function("document.querySelectorAll('#session-picker option').length > 0")
+    page.wait_for_selector(".session-row")
 
-    assert "browser_picker" in page.inner_text("#session-picker")
+    assert "browser_rail" in page.inner_text("#rail-list")
+    # The row is dated from the checkpoint id, not from anything the client stores.
+    assert page.locator(".session-row .session-when").first.inner_text() != ""
+
+
+def test_the_rail_creates_renames_and_deletes(page):
+    page, base, _ = page
+    _open(page, base, "browser_crud")
+    page.wait_for_selector(".session-row")
+
+    page.once("dialog", lambda dialog: dialog.accept("made-in-rail"))
+    page.click("#rail-new")
+    page.wait_for_selector("text=made-in-rail")
+
+    row = page.locator(".session-row", has_text="made-in-rail")
+    page.once("dialog", lambda dialog: dialog.accept("renamed-in-rail"))
+    row.locator("button[title^='Rename']").click()
+    page.wait_for_selector("text=renamed-in-rail")
+    assert "made-in-rail" not in page.inner_text("#rail-list")
+
+    page.once("dialog", lambda dialog: dialog.accept())  # the confirm()
+    page.locator(".session-row", has_text="renamed-in-rail") \
+        .locator("button[title^='Delete']").click()
+    page.wait_for_function(
+        "!document.getElementById('rail-list').innerText.includes('renamed-in-rail')"
+    )
+
+
+def test_the_rail_filter_narrows_the_list(page):
+    page, base, _ = page
+    _open(page, base, "browser_filter")
+    page.wait_for_selector(".session-row")
+
+    # Two real sessions: only a session with a checkpoint is listed, and `browser_filter`
+    # has never taken a turn, so it is a client-side draft that the reload would drop.
+    for name in ("zzz-unlikely", "aaa-other"):
+        page.once("dialog", lambda dialog, n=name: dialog.accept(n))
+        page.click("#rail-new")
+        page.wait_for_selector(f"text={name}")
+
+    page.wait_for_function("document.querySelectorAll('.session-row').length === 2")
+
+    page.fill("#rail-filter", "zzz")
+    page.wait_for_function("document.querySelectorAll('.session-row').length === 1")
+    assert "zzz-unlikely" in page.inner_text("#rail-list")
+
+    page.fill("#rail-filter", "")
+    page.wait_for_function("document.querySelectorAll('.session-row').length === 2")
+
+
+def test_the_rail_collapses_and_the_width_survives_a_reload(page):
+    page, base, _ = page
+    _open(page, base, "browser_geometry")
+    page.wait_for_selector(".session-row")
+
+    def rail_width():
+        return page.evaluate("document.getElementById('rail').getBoundingClientRect().width")
+
+    assert rail_width() > 0
+    page.click("#rail-toggle")
+    page.wait_for_function(
+        "document.getElementById('rail').getBoundingClientRect().width === 0"
+    )
+
+    page.click("#rail-toggle")   # back open, then resize it
+    page.evaluate("window.localStorage.setItem('adaptrna.rail.width', '22')")
+    page.reload()
+    page.wait_for_selector(".session-row")
+
+    assert rail_width() == pytest.approx(22 * 16, abs=2)
+
+
+def test_the_thinking_dots_are_dark_at_rest(page):
+    """The dots animated from page load for the whole of Phase 9: `.thinking` set an
+    author-origin `display`, which beats the user agent's `[hidden] { display: none }`."""
+    page, base, _ = page
+    _open(page, base, "browser_dots")
+
+    assert page.locator("#thinking").is_visible() is False
+
+    _say(page, "hello")
+    page.wait_for_selector(".msg-assistant")
+    page.wait_for_function(
+        "getComputedStyle(document.getElementById('thinking')).display === 'none'"
+    )

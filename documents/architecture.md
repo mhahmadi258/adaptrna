@@ -160,14 +160,20 @@ sequenceDiagram
 ```
 
 The gated set is `GATED_TOOLS = ("start_training", "register_trained_adapter",
-"land_generated_code")` — GPU hours, a new servable tool, and code written into your
-repository.
+"land_generated_code", "activate_tool", "deactivate_tool")` — GPU hours, a new servable
+tool, code written into your repository, and changing which tools the assistant may run.
+
+The first three are gated for cost and blast radius; the toggles are gated for **authority**
+(Phase 10). Enabling a tool is cheap and reversible, but the switch is how the user states
+which capabilities they trust — so an assistant that flips it to unblock itself has overruled
+them. See [agents.md §4](modules/agents.md#4-the-approval-gate).
 
 Two helpers build what the human sees:
 
 * `_summarize(call)` — one line: what approving this would do.
 * `_details(call)` — the **exact command** for `start_training` (plus output dir, ETA,
-  warnings, and a download note when the plan sets `data.prepare`), or the file list,
+  warnings, and a download note when the plan sets `data.prepare`), the tool name with its
+  current and post-approval state for a toggle, or the file list,
   staging path and full diff for `land_generated_code`.
 
 Every front end renders the *same* payload:

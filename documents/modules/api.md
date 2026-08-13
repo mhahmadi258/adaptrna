@@ -35,11 +35,20 @@ continues in the browser (and back).
 | `routers/system.py` | 35 | `/health`, `/api/doctor` |
 | `routers/tools.py` | 108 | list / info / activate / deactivate / test / predict / call |
 | `routers/jobs.py` | 53 | list / status / logs / analysis / cancel |
-| `routers/sessions.py` | 107 | list / history / messages (SSE) / resume (SSE) |
+| `routers/sessions.py` | 175 | list / create / rename / delete / history / messages (SSE) / resume (SSE) |
+| `sessions_store.py` | 130 | Sessions as a resource: recency listing and rename, straight SQL over the checkpointer's own tables |
 | `routers/ui.py` | 58 | The app shell at `/`, static assets at `/ui` |
 
-**Deliberately absent: any delete surface.** Deletion stayed a human action at the CLI, and
-an HTTP endpoint is a weaker boundary than a shell prompt.
+**The only deletable thing here is a session.** Everything else — tools, artifacts, jobs,
+runs, staged code — stays a human action at the CLI, because for expensive and
+hard-to-reproduce things a shell prompt really is a better boundary than a button.
+
+Phase 8 and Phase 9 said that of *everything*, sessions included. Phase 10 narrowed it. A
+conversation is neither expensive nor hard to recreate, the client that lists them is exactly
+where a person expects to manage them, and the CLI alternative was
+`toolhub prune sessions --older-than N --yes` — which computes age from the mtime of the
+whole SQLite file, so it cannot even target one session. That was friction without safety.
+The *agent* still cannot delete anything at all.
 
 ## 2. `app.py` — assembly, errors, auth
 
@@ -185,7 +194,10 @@ approval gate, so a human sees the exact command before GPU time is spent.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/sessions` | Distinct `thread_id`s from the checkpointer |
+| `GET` | `/api/sessions` | `[{id, updated_at, checkpoints}]`, **newest first**. `updated_at` is decoded from the newest checkpoint's UUIDv6 — no timestamp is stored anywhere |
+| `POST` | `/api/sessions` | Body `{id}` → 201 and the new row. Refuses (409) a duplicate, (400) a blank name. Seeds an empty checkpoint so the session survives a reload before its first turn |
+| `PATCH` | `/api/sessions/{id}` | Body `{id: new}` → the renamed row. `thread_id` is part of the primary key, so this is an `UPDATE` across the checkpointer's tables. Refuses (404) unknown, (409) an occupied name or a session with a pending approval |
+| `DELETE` | `/api/sessions/{id}` | `{deleted: id}`. Irreversible; reuses `prune.delete_session`, so there is one deletion path, not two |
 | `GET` | `/api/sessions/{id}/history` | `{session, messages, pending_approval}` |
 | `POST` | `/api/sessions/{id}/messages` | Body `{text}` → **SSE stream**. Refuses (409) if the session is already waiting on an approval. |
 | `POST` | `/api/sessions/{id}/resume` | Body `{approved, note?}` → **a new SSE stream** continuing the same turn. Refuses (409) if nothing is pending. |
@@ -242,7 +254,8 @@ This service can spend GPU hours and write code into the repository, so:
   lives in [`cli/serve.py::check_binding`](cli.md#servepy), before uvicorn is imported, so
   the dangerous configuration is not reachable by accident;
 * a configured token is required on every path except `/health`;
-* there is **no delete endpoint** anywhere;
+* the only delete endpoint is `DELETE /api/sessions/{id}` — no tool removal, no pruning, no
+  job or artifact deletion;
 * `POST /api/jobs/{id}/cancel` inherits the recycled-PID guard rather than reimplementing
   it.
 

@@ -22,3 +22,9 @@ class MessageRequest(BaseModel):
 class ResumeRequest(BaseModel):
     approved: bool = Field(description="Whether the user approved the pending action")
     note: Optional[str] = Field(default=None, description="Why, if they declined")
+
+
+class SessionRequest(BaseModel):
+    """Create or rename: both carry exactly one thing, the name the session should have."""
+
+    id: str = Field(description="The session name, which is also its storage key")

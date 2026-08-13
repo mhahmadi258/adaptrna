@@ -161,6 +161,8 @@ at `/docs`.
 | `GET /health`, `GET /api/doctor` | liveness; the full Phase 7 report |
 | `GET/POST /api/tools/...` | list, info, activate/deactivate, test, predict, call |
 | `GET /api/jobs/...` | list, status, logs, analysis; `POST .../cancel` |
+| `GET /api/sessions` | `[{id, updated_at, checkpoints}]`, newest first |
+| `POST /api/sessions` | create one; `PATCH`/`DELETE /api/sessions/{id}` rename and remove it |
 | `POST /api/sessions/{id}/messages` | one turn, streamed as SSE |
 | `POST /api/sessions/{id}/resume` | answer a pending approval; the turn continues |
 

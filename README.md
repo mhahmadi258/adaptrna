@@ -55,9 +55,10 @@ new servable tool, code written into your repo) happens without your approval.
 python -m adaptrna_agentic.cli.serve --open        # 127.0.0.1:8000, opens the UI
 ```
 
-The same platform with a face on it: streamed chat, a tool dashboard you can toggle and
-test from, a live training monitor, and the approval gate as a dialog. Sessions are shared
-with the terminal — start a conversation in `chat`, continue it in the browser, and back.
+The same platform with a face on it: streamed chat, a session rail on the left you can
+resize, collapse, filter and manage, a tool dashboard you can toggle and test from, a live
+training monitor, and the approval gate as a dialog. Sessions are shared with the terminal —
+start a conversation in `chat`, continue it in the browser, and back.
 
 ![The AdaptRNA web UI](docs/web-ui.png)
 
@@ -66,6 +67,13 @@ against the terminal's own renderer — because the only thing that makes the ga
 having is that you can see what you are agreeing to:
 
 ![The approval gate](docs/approval-gate.png)
+
+**Which tools are enabled is yours to decide.** The assistant can offer to flip a switch; it
+cannot flip one. A disabled tool is reported as disabled and the request stops there, and
+`activate_tool` / `deactivate_tool` come to you as an approval like any other consequential
+action — decline and the manifest is untouched:
+
+![The tool-state gate](docs/tool-gate.png)
 
 It binds to loopback and **refuses to start** on any other address without
 `ADAPTRNA_API_TOKEN` — this service can spend GPU hours and write code into your

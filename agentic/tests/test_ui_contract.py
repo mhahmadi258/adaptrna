@@ -212,14 +212,51 @@ def test_the_health_badge_fields(client):
     assert isinstance(body["failed_checks"], list)
 
 
-def test_the_session_picker_gets_a_list_of_names(client):
+def test_the_session_rail_gets_rows_not_names(client):
+    """Phase 10 changed this payload from bare strings to objects; `render.js::sessionRow`
+    reads `id` and `updated_at` by name, and `app.js` sorts by nothing because the server
+    already did."""
     test_client, _ = client
     _events(test_client)
 
     sessions = test_client.get("/api/sessions").json()
 
-    assert SESSION in sessions
-    assert all(isinstance(name, str) for name in sessions)
+    assert SESSION in [s["id"] for s in sessions]
+    for session in sessions:
+        assert set(session) >= {"id", "updated_at", "checkpoints"}
+        assert isinstance(session["id"], str)
+
+
+def test_the_rail_can_create_rename_and_delete(client):
+    """The three mutations the rail buttons make, in the order a user makes them."""
+    test_client, _ = client
+
+    created = test_client.post("/api/sessions", json={"id": "rail-one"})
+    assert created.status_code == 201
+    assert created.json()["id"] == "rail-one"
+
+    renamed = test_client.patch("/api/sessions/rail-one", json={"id": "rail-two"})
+    assert renamed.status_code == 200
+    assert renamed.json()["id"] == "rail-two"
+
+    listed = [s["id"] for s in test_client.get("/api/sessions").json()]
+    assert "rail-two" in listed and "rail-one" not in listed
+
+    deleted = test_client.delete("/api/sessions/rail-two")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": "rail-two"}
+    assert "rail-two" not in [s["id"] for s in test_client.get("/api/sessions").json()]
+
+
+def test_the_approval_modal_fields_for_a_tool_toggle(client):
+    """`render.js::approvalBody` renders `details.tool` / `.current_state` /
+    `.after_approval` for a gated activation, field for field with the terminal."""
+    from adaptrna_agentic.agents.orchestrator import _details, _summarize
+
+    call = {"name": "activate_tool", "args": {"name": "vienna_fold"}, "id": "c1"}
+
+    assert _summarize(call) == "Enable the tool 'vienna_fold' (currently unknown)"
+    assert set(_details(call)) == {"tool", "current_state", "after_approval"}
 
 
 def test_the_jobs_panel_fields(client):

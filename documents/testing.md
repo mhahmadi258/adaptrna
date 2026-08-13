@@ -200,15 +200,16 @@ SSE collection helpers, so HTTP tests can assert on frame sequences.
 
 | File | Guards |
 |---|---|
-| `test_api_sessions.py` | Streaming, and the property the demo turns on: a session written by the terminal continues correctly through the API against the same file |
+| `test_api_sessions.py` | Streaming; session management (create / rename / delete, and their 404s and 409s); and the property the demo turns on: a session written by the terminal continues correctly through the API against the same file |
 | `test_api_approval.py` | Over HTTP a gated action must not run before the human answers, and not at all if they decline |
+| `test_approval_gate.py` | The gate itself, including tool-state changes: an activation must not touch the manifest at the interrupt, and **a decline must leave the tool disabled** |
 | `test_api_tools.py` | Every endpoint wraps CLI behaviour — **including its refusals**, which must arrive as status codes carrying the CLI's own message |
 | `test_api_jobs.py` | Job endpoints and the error-mapping table |
 | `test_api_concurrency.py` | Overlapping predictions for different adapters cannot answer from the wrong one |
 | `test_api_security.py` | Loopback default, the refusal to bind elsewhere without a token, the 401, the `/health` exemption |
 | `test_ui_serving.py` | The client is served and is genuinely **self-contained** — the offline check is the one with teeth |
 | `test_ui_contract.py` | **The compiler this pair of languages does not have**: every field and event `ui/*.js` reads by name, so a server-side rename fails in `pytest` naming the client file |
-| `test_ui_browser.py` | Opt-in. The only tests that prove the JavaScript actually runs |
+| `test_ui_browser.py` | Opt-in. The only tests that prove the JavaScript actually runs — streaming, the modal, the session rail's create/rename/delete, its resize surviving a reload, and that the thinking dots are dark at rest |
 
 ## 7. Scenario tests
 

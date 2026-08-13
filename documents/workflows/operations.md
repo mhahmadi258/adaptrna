@@ -215,8 +215,11 @@ It binds loopback by default and **refuses to start** on any other address witho
 — checked before uvicorn is even imported, so the dangerous configuration is not reachable
 by accident. A configured token is required on every path except `/health`.
 
-There is **no delete surface** in the API at all: no tool removal, no pruning, no session
-deletion. Those stayed CLI actions.
+The only delete surface in the API is `DELETE /api/sessions/{id}` (Phase 10). No tool
+removal, no pruning, no job or artifact deletion — those stayed CLI actions, because a shell
+prompt really is a better boundary for things that are expensive or hard to recreate. A
+conversation is neither. Note that `prune` is still not an agent tool: the *model* cannot
+delete anything.
 
 Health:
 
@@ -232,9 +235,20 @@ service — a conversation started in one continues in the other.
 
 ```bash
 python -m adaptrna_agentic.cli.chat --list-sessions
-curl -s localhost:8000/api/sessions | jq
+curl -s localhost:8000/api/sessions | jq          # [{id, updated_at, checkpoints}], newest first
 curl -s localhost:8000/api/sessions/<name>/history | jq
+
+curl -s -X POST localhost:8000/api/sessions -H 'content-type: application/json' \
+     -d '{"id":"work"}' | jq                      # 409 if it already exists
+curl -s -X PATCH localhost:8000/api/sessions/work -H 'content-type: application/json' \
+     -d '{"id":"work-2"}' | jq                    # carries the history with it
+curl -s -X DELETE localhost:8000/api/sessions/work-2 | jq
 ```
+
+Rename is an `UPDATE` of `thread_id`, which is part of the checkpointer's primary key — so
+it is refused (409) when the target name is taken, or when the session is suspended at an
+approval whose interrupt is addressed by that id. Delete is irreversible and `chat_data/` is
+git-ignored; the browser asks for a confirmation and that is the whole safety net.
 
 A session waiting on an approval refuses new messages (409) until `/resume` answers it. In
 the browser, a refresh mid-approval restores the dialog from `history.pending_approval` —
@@ -269,5 +283,5 @@ Each of these is a deliberate design choice with a recorded rationale, not an ov
 | **Generated code is accident-isolated, not sandboxed** | Time, memory and file-size limits catch runaway loops; the human diff gate is the real boundary |
 | **The stores detect concurrent writes, they do not prevent them** | Detection is cheap; losing a registration is not. The second writer retries. |
 | **Deactivation does not free memory** | peft cannot cleanly uninject an adapter; resident adapters cost megabytes. `rebuild()` is the full cleanup. |
-| **Single-user posture** | Loopback, one token, no delete surface. A deliberate design, not a starting point for a shared deployment. |
+| **Single-user posture** | Loopback, one token, and the only thing deletable over HTTP is your own conversation. A deliberate design, not a starting point for a shared deployment. |
 | **Linux only** | `/proc/<pid>/stat` for PID identity; `resource.setrlimit` + `os.setsid` for the sandbox |
