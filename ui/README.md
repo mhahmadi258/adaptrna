@@ -19,31 +19,35 @@ in the manifest, jobs in the job store — so there was no client-side domain mo
 a second dependency ecosystem in a Python repo.
 [plans/PHASE_9_WEB_UI.md](../plans/PHASE_9_WEB_UI.md) §2 has the full comparison.
 
-### The framework tripwire has been tripped
+### The framework tripwire, restated
 
-Phase 9 set an explicit signal for when to stop hand-rolling this: *past roughly a thousand
-lines, a second maintainer, or real client-side state, port to React.* It recorded 1,109
-lines and argued the client stayed justified **because none of those lines were client-side
-state**.
+Phase 9 set the signal as a line count: *past roughly a thousand lines, a second maintainer,
+or real client-side state, port to React.* It recorded 1,109 lines and held, because none of
+them were client-side state. Phase 10 recorded 1,329 and held again, on the narrower ground
+that `state.sessions` and a persisted rail width are derived or cosmetic. Phase 11 brings the
+client to **1,648 lines**.
 
-Phase 10 crossed both halves. The session rail brings the client to **1,329 lines of JS**,
-and it introduces exactly the thing that argument leaned on: `state.sessions` (so filtering
-is local rather than a round trip) and rail geometry persisted in `localStorage`.
+A threshold renegotiated every phase is not a threshold. So the count is retired, and the
+condition is now something that can actually fire:
 
-The port has not been made, and the reasoning for holding is narrower than before: the new
-state is two fields and a width, all of it derived or cosmetic, none of it a domain model
-that can disagree with the server. That is a weaker argument than "there is none", and it is
-recorded here rather than left implicit so the next feature to add state meets a stated
-position instead of an assumption. The API is the contract, so switching still costs the
-client alone.
+> **Port** when the client first holds state the server does not — an optimistic update, a
+> local edit buffer, an undo stack — or when a third mode joins chat and job-log in the
+> centre column.
+> **Until then, extract rather than port.** The next module out is the job-log controller
+> (`ui/jobs.js`), which is already self-contained.
+
+Neither condition has fired. `state.view`, `state.job` and `state.logFollow` are *which pane
+is on screen*; `state.jobs` and `state.jobStatus` are a render cache of a list the server
+owns, exactly like `state.sessions`. Nothing here can disagree with the server. The API is
+the contract, so switching still costs the client alone.
 
 | file | what it does |
 |---|---|
-| `index.html` | the shell: layout and the modal skeleton |
-| `app.js` | wiring — the session rail, panels, job polling, the event dispatch for a turn |
+| `index.html` | the shell: the activity bar, the rail, the centre column, the modal skeleton |
+| `app.js` | wiring — the activity bar, both rail views, job and log polling, the event dispatch for a turn |
 | `sse.js` | SSE over `fetch`: a pure frame parser plus a thin transport |
 | `api.js` | the endpoints as functions, and the bearer token when one is configured |
-| `render.js` | messages, session rows, tool rows, job rows, the approval modal |
+| `render.js` | messages, session rows, tool rows, job rows, the job-log header, the approval modal |
 | `md.js` | a small Markdown renderer — the model writes tables, and raw pipes are unreadable |
 | `dom.js` | the shared `el()` helper; nothing in the client assigns `innerHTML` |
 | `style.css` | one stylesheet, light and dark |
@@ -63,7 +67,13 @@ is no separate resume path in `app.js` — `consume()` is just called again.
 the whole of Phase 9: `app.js` set `.hidden` correctly, but `.thinking { display: flex }` in
 the stylesheet overrode the user agent's `[hidden] { display: none }` regardless of
 specificity. Anything this stylesheet gives a `display` to and JS hides needs its own
-`[hidden]` rule.
+`[hidden]` rule — there are five now, and the centre-column swap (`.chat` / `.joblog`) added
+two of them.
+
+**The centre column has two modes and one composer.** `#chat` and `#joblog` are siblings, and
+opening a run's log hides the chat rather than tearing it down — a turn keeps streaming into
+`#chat-log` while you read a log, and is whole when you come back. The composer goes with the
+chat, because it belongs to a session and not to a run.
 
 ## Tests
 

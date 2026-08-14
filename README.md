@@ -55,12 +55,20 @@ new servable tool, code written into your repo) happens without your approval.
 python -m adaptrna_agentic.cli.serve --open        # 127.0.0.1:8000, opens the UI
 ```
 
-The same platform with a face on it: streamed chat, a session rail on the left you can
-resize, collapse, filter and manage, a tool dashboard you can toggle and test from, a live
-training monitor, and the approval gate as a dialog. Sessions are shared with the terminal —
-start a conversation in `chat`, continue it in the browser, and back.
+The same platform with a face on it: streamed chat, a tool dashboard you can toggle and test
+from, and the approval gate as a dialog. An icon bar on the far left switches the rail beside
+it between your **sessions** and your **training runs** — both resizable, collapsible and
+filterable. Sessions are shared with the terminal — start a conversation in `chat`, continue
+it in the browser, and back.
 
 ![The AdaptRNA web UI](docs/web-ui.png)
+
+Pick a run and its log takes over the middle column, tailing while the run is going, with
+epoch, step and the latest metrics above it. A run is never *started* from here: that happens
+in the chat, behind the gate below, so nothing spends GPU time without you seeing the command
+first.
+
+![A training run's log](docs/job-log.png)
 
 Approvals show the **exact command** — byte for byte what the terminal prints, verified
 against the terminal's own renderer — because the only thing that makes the gate worth

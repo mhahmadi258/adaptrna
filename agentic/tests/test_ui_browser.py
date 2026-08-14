@@ -126,6 +126,22 @@ def _jobs(tmp_path):
     return JobStore(tmp_path / "jobs_data").jobs
 
 
+def _view(page, name):
+    """Click one of the two activity-bar buttons. Both views render into `#rail-list`."""
+    page.click(f"#activity-{name}")
+
+
+def _approve_a_run(page, base, session):
+    """Drive the scripted gate to completion so a real job with a real log exists."""
+    _open(page, base, session)
+    _say(page, "hello")
+    page.wait_for_selector(".msg-assistant")
+    _say(page, "train it")
+    page.wait_for_selector("#approval:not([hidden])")
+    page.click("#approval-approve")
+    page.wait_for_selector("#approval", state="hidden")
+
+
 # ------------------------------------------------------------------ chat
 
 def test_the_app_loads_and_streams_a_reply(page):
@@ -166,36 +182,47 @@ def test_the_panels_render_server_state(page):
 
     page.wait_for_selector(".tool-row")
     assert "splice_site" in page.inner_text("#tools-list")
-    assert "No training runs yet" in page.inner_text("#jobs-list")
+
+    _view(page, "jobs")
+    page.wait_for_selector("#rail-list .msg-notice")
+    assert "No training runs yet" in page.inner_text("#rail-list")
 
 
 def test_the_monitor_keeps_polling_after_a_transient_conflict(page):
     """A 409 must not freeze the live monitor.
 
     Phase 7's optimistic concurrency answers 409 while the job store is mid-write, which
-    is most likely just after a run starts — exactly when someone is watching this panel.
-    The first version of `refreshJobs` returned without re-arming its timer and stopped
-    updating for good; the live DoD found it.
+    is most likely just after a run starts — exactly when someone is watching. The first
+    version of `refreshJobs` returned without re-arming its timer and stopped updating for
+    good; the live DoD found it.
+
+    Two refusals, not one: the first lands during boot and the second on the view switch,
+    so only the re-armed *timer* can produce the render this asserts on. The empty state is
+    no longer proof of anything — the rail paints it from an empty cache before the first
+    successful poll — so the third response carries a job that can only have come over the
+    wire.
     """
     page, base, _ = page
     calls = {"n": 0}
 
     def flaky(route):
         calls["n"] += 1
-        if calls["n"] == 1:
+        if calls["n"] <= 2:
             route.fulfill(status=409, content_type="application/json",
                           body='{"error": "changed on disk since it was read",'
                                ' "retryable": true}')
         else:
-            route.continue_()
+            route.fulfill(status=200, content_type="application/json",
+                          body='[{"id": "recovered_run", "task": "splice_site",'
+                               ' "arm": "lora", "state": "succeeded"}]')
 
     page.route("**/api/jobs", flaky)
     _open(page, base, "browser_flaky")
+    _view(page, "jobs")
 
-    # The panel can only reach its empty state by polling again after the refusal.
-    page.wait_for_selector("#jobs-list .msg-notice", timeout=15000)
-    assert "No training runs yet" in page.inner_text("#jobs-list")
-    assert calls["n"] >= 2, "the monitor gave up after one conflict"
+    page.wait_for_selector(".job-row", timeout=15000)
+    assert "recovered_run" in page.inner_text("#rail-list")
+    assert calls["n"] >= 3, "the monitor gave up after a conflict"
 
 
 def test_a_tool_can_be_disabled_and_re_enabled(page):
@@ -250,17 +277,11 @@ def test_declining_starts_nothing(page):
 
 def test_approving_starts_the_job_and_the_monitor_shows_it(page):
     page, base, tmp_path = page
-    _open(page, base, "browser_approve")
-    _say(page, "hello")
-    page.wait_for_selector(".msg-assistant")
-    _say(page, "train it")
-    page.wait_for_selector("#approval:not([hidden])")
+    _approve_a_run(page, base, "browser_approve")
 
-    page.click("#approval-approve")
-
-    page.wait_for_selector("#approval", state="hidden")
+    _view(page, "jobs")
     page.wait_for_selector(".job-row", timeout=15000)
-    assert "browser_run" in page.inner_text("#jobs-list")
+    assert "browser_run" in page.inner_text("#rail-list")
     assert "browser_run" in _jobs(tmp_path)
 
 
@@ -374,6 +395,121 @@ def test_the_rail_collapses_and_the_width_survives_a_reload(page):
     page.wait_for_selector(".session-row")
 
     assert rail_width() == pytest.approx(22 * 16, abs=2)
+
+
+# ------------------------------------------------------------------ activity bar + job log
+
+def test_the_activity_bar_switches_the_rail_between_sessions_and_jobs(page):
+    page, base, _ = page
+    _open(page, base, "browser_views")
+    page.wait_for_selector(".session-row")
+    assert page.is_visible("#rail-new")
+
+    _view(page, "jobs")
+    page.wait_for_selector("#rail-list .msg-notice")
+    assert page.locator(".session-row").count() == 0
+    # There is no "＋ New run" and never will be: starting one is a gated action in the chat.
+    assert not page.is_visible("#rail-new")
+    assert "behind the approval gate" in page.inner_text("#rail-list")
+
+    _view(page, "sessions")
+    page.wait_for_selector(".session-row")
+    assert page.is_visible("#rail-new")
+
+
+def test_clicking_the_open_view_collapses_the_rail(page):
+    """VS Code's behaviour — and the activity bar never collapses with it."""
+    page, base, _ = page
+    _open(page, base, "browser_recollapse")
+    page.wait_for_selector(".session-row")
+
+    page.click("#activity-sessions")
+    page.wait_for_function("document.getElementById('rail').getBoundingClientRect().width === 0")
+    assert page.evaluate(
+        "document.getElementById('activity').getBoundingClientRect().width"
+    ) > 0, "the activity bar collapsed with the rail; there would be no way back"
+
+    page.click("#activity-sessions")
+    page.wait_for_function("document.getElementById('rail').getBoundingClientRect().width > 0")
+
+
+def test_selecting_a_job_replaces_the_chat_with_its_log(page):
+    page, base, _ = page
+    _approve_a_run(page, base, "browser_joblog")
+
+    _view(page, "jobs")
+    page.wait_for_selector(".job-row", timeout=15000)
+    page.click(".job-open")
+
+    page.wait_for_selector("#joblog:not([hidden])")
+    assert not page.is_visible("#chat")
+    # The composer belongs to a session, not a run.
+    assert not page.is_visible("#composer-input")
+    assert "browser_run" in page.inner_text("#joblog-head")
+
+    # The scripted plan runs `/bin/echo trained …`, so that word reaches `train.log`.
+    page.wait_for_function(
+        "document.getElementById('joblog-body').innerText.includes('trained')",
+        timeout=15000,
+    )
+
+
+def test_closing_the_job_log_returns_to_the_chat(page):
+    page, base, _ = page
+    _approve_a_run(page, base, "browser_jobclose")
+
+    _view(page, "jobs")
+    page.wait_for_selector(".job-row", timeout=15000)
+
+    page.click(".job-open")
+    page.wait_for_selector("#joblog:not([hidden])")
+    page.click("#joblog .btn-close")
+    page.wait_for_selector("#joblog", state="hidden")
+    assert page.is_visible("#composer-input")
+
+    # Picking a conversation is the other way back.
+    page.click(".job-open")
+    page.wait_for_selector("#joblog:not([hidden])")
+    _view(page, "sessions")
+    page.click(".session-open")
+    page.wait_for_selector("#joblog", state="hidden")
+    assert page.is_visible("#composer-input")
+
+
+def test_the_open_view_survives_a_reload(page):
+    page, base, _ = page
+    _open(page, base, "browser_viewreload")
+    page.wait_for_selector(".session-row")
+
+    _view(page, "jobs")
+    page.wait_for_selector("#rail-list .msg-notice")
+
+    page.reload()
+    page.wait_for_selector("#composer-input:not([disabled])")
+    page.wait_for_selector("#rail-list .msg-notice")
+
+    assert page.get_attribute("#activity-jobs", "aria-selected") == "true"
+    assert page.locator(".session-row").count() == 0
+
+
+def test_the_grip_resizes_from_the_rails_own_left_edge(page):
+    """The drag measured `clientX` against the viewport, so an activity bar to the left of
+    the rail made every drag report a width one bar too wide."""
+    page, base, _ = page
+    _open(page, base, "browser_grip")
+    page.wait_for_selector(".session-row")
+
+    bar = page.evaluate("document.getElementById('activity').getBoundingClientRect().width")
+    assert bar > 0, "there is no activity bar to be offset by"
+
+    box = page.locator("#rail-grip").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 40)
+    page.mouse.down()
+    page.mouse.move(360, box["y"] + 40, steps=8)
+    page.mouse.up()
+
+    width = page.evaluate("document.getElementById('rail').getBoundingClientRect().width")
+    assert width == pytest.approx(360 - bar, abs=4), "the rail's edge did not land under the pointer"
 
 
 def test_the_thinking_dots_are_dark_at_rest(page):

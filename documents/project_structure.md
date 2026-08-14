@@ -241,13 +241,13 @@ fails to import is reported by name and does not break the others.
 ui/
 ├── README.md     [doc]  why no build step, and the tripwire for changing that
 ├── index.html           the shell: layout + modal skeleton; loads /ui/app.js as a module
-├── app.js        (580)  wiring: the session rail, panels, job polling, event dispatch
+├── app.js        (821)  wiring: the activity bar, both rail views, job + log polling
 ├── sse.js        (105)  SSE over fetch — a pure frame parser plus a thin transport
 ├── api.js        (114)  endpoints as functions; bearer token in sessionStorage
-├── render.js     (316)  messages, session rows, tool rows, job rows, the approval modal
+├── render.js     (394)  messages, session/tool/job rows, the job-log header, the modal
 ├── md.js         (180)  small Markdown renderer (the model writes tables)
 ├── dom.js        (34)   the shared el() helper; nothing here assigns innerHTML
-└── style.css     (532)  one stylesheet, light and dark
+└── style.css     (652)  one stylesheet, light and dark
 ```
 
 1,939 lines total, 1,329 of them JavaScript — past the thousand-line tripwire `README.md`

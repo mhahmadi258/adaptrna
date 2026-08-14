@@ -332,7 +332,13 @@ flowchart LR
 
 A conversation is a LangGraph **thread**, identified by `thread_id` (the session name).
 Because both front ends open the same SQLite file, a session started in the terminal
-continues in the browser and back. The API sets `PRAGMA journal_mode=WAL` and
+continues in the browser and back.
+
+The browser displays the platform's *two* long-lived things — conversations and training
+runs — from one left rail, switched by a static icon bar, with the centre column showing
+either the chat or the open run's log. It still owns no state store of its own: sessions come
+from the checkpointer, runs from the job store, and everything the client keeps is either a
+render cache or which pane is on screen. The API sets `PRAGMA journal_mode=WAL` and
 `busy_timeout=5000` explicitly — a fresh database starts in rollback-journal mode where a
 writer blocks every reader, which would defeat the point.
 

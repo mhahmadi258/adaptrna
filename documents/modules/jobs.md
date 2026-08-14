@@ -283,3 +283,7 @@ and no engine training are involved (`tests/test_job_runner.py`).
   One file per run in practice.
 * **The analyzer reads the final logged value, not the best.** That matches the engine,
   which has no metric-based checkpoint selection: the final-epoch model is what gets tested.
+* **The log is read by tail, never streamed.** `logs(job_id, tail=N)` reads the whole file
+  and returns the last N lines; the HTTP layer caps N at 2000 and the browser polls it every
+  3 s while the run is running. Nothing follows the file, so a burst longer than the tail
+  between two polls is lost to the reader (never to the file).

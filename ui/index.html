@@ -18,6 +18,14 @@
 
 <main class="layout">
 
+  <nav id="activity" class="activity" role="tablist" aria-label="Views">
+    <button id="activity-sessions" class="activity-btn" type="button" role="tab"
+            aria-controls="rail" aria-selected="true" title="Sessions">💬</button>
+    <button id="activity-jobs" class="activity-btn" type="button" role="tab"
+            aria-controls="rail" aria-selected="false" title="Training runs">⏱<span
+            id="activity-dot" class="activity-dot" hidden></span></button>
+  </nav>
+
   <aside class="rail" id="rail" aria-label="Sessions">
     <div class="rail-head">
       <button id="rail-new" class="btn btn-primary rail-new" type="button">＋ New session</button>
@@ -29,24 +37,28 @@
          aria-label="Resize the session list" tabindex="0"></div>
   </aside>
 
-  <section class="chat" aria-label="Chat">
-    <div id="chat-log" class="chat-log"></div>
-    <div id="thinking" class="thinking" hidden><span></span><span></span><span></span></div>
-    <div class="composer">
-      <textarea id="composer-input" rows="1" placeholder="Ask about your data, your tools, or a fine-tune…"></textarea>
-      <button id="composer-send" class="btn btn-primary" type="button">Send</button>
-    </div>
-  </section>
+  <!-- Exactly one of these two is on screen: a conversation, or a run's log. The chat is
+       never torn down, so a turn keeps streaming into it while a log is being read. -->
+  <div class="center">
+    <section id="chat" class="chat" aria-label="Chat">
+      <div id="chat-log" class="chat-log"></div>
+      <div id="thinking" class="thinking" hidden><span></span><span></span><span></span></div>
+      <div class="composer">
+        <textarea id="composer-input" rows="1" placeholder="Ask about your data, your tools, or a fine-tune…"></textarea>
+        <button id="composer-send" class="btn btn-primary" type="button">Send</button>
+      </div>
+    </section>
 
-  <aside class="side" aria-label="Tools and jobs">
+    <section id="joblog" class="joblog" aria-label="Job log" hidden>
+      <header id="joblog-head" class="joblog-head"></header>
+      <pre id="joblog-body" class="joblog-body" tabindex="0"></pre>
+    </section>
+  </div>
+
+  <aside class="side" aria-label="Tools">
     <section class="panel">
       <h2>Tools</h2>
       <div id="tools-list" class="panel-list"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Jobs</h2>
-      <div id="jobs-list" class="panel-list"></div>
     </section>
 
     <section id="inspector" class="panel inspector" hidden>

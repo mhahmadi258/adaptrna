@@ -182,47 +182,62 @@ function summarizeReport(report) {
 
 // ------------------------------------------------------------------ jobs
 
-const JOB_STATES = { running: "is-running", succeeded: "is-ok", failed: "is-fail" };
+//: Every state `jobs/store.py` can hold. `cancelled` was missing until Phase 11, so a
+//: cancelled run drew a colourless dot and looked indistinguishable from one still queued.
+const JOB_STATES = {
+  running: "is-running",
+  succeeded: "is-ok",
+  failed: "is-fail",
+  cancelled: "is-fail",
+};
 
-export function jobRow(job, status, handlers) {
+const isTerminal = (state) => state === "succeeded" || state === "failed" || state === "cancelled";
+
+/** Epoch/step and the latest metric chips — shared so the rail row and the log header agree. */
+export function progressLines(progress) {
+  if (!progress) return [];
+
+  const lines = [];
+  const marks = [];
+  if (progress.epoch !== null && progress.epoch !== undefined) marks.push(`epoch ${progress.epoch}`);
+  if (progress.step !== null && progress.step !== undefined) marks.push(`step ${progress.step}`);
+  if (marks.length) lines.push(el("div", { class: "job-progress", text: marks.join(" · ") }));
+
+  const metrics = Object.entries(progress.latest_metrics || {});
+  if (metrics.length) {
+    lines.push(
+      el(
+        "div",
+        { class: "job-metrics" },
+        metrics.map(([key, value]) =>
+          el("span", { class: "metric" }, el("span", { class: "metric-key", text: key }), " ",
+             el("span", { class: "metric-value", text: number(value) })),
+        ),
+      ),
+    );
+  }
+
+  return lines;
+}
+
+export function jobRow(job, status, handlers, isCurrent) {
   const state = (status && status.state) || job.state;
-  const progress = status && status.progress;
 
   const body = el(
     "div",
     { class: "panel-row-main" },
     el("span", { class: `dot job-dot ${JOB_STATES[state] || ""}`, title: state }),
-    el("span", { class: "panel-name", text: job.id }),
+    // Opening the log *is* selecting the row, so the id is the button — the same shape as
+    // `sessionRow`'s `.session-open`.
+    el("button", { class: "job-open", type: "button", title: job.id, text: job.id,
+                   onclick: () => handlers.select(job.id) }),
     el("span", { class: "panel-tag", text: state }),
   );
-
-  const lines = [];
-  if (progress) {
-    const marks = [];
-    if (progress.epoch !== null && progress.epoch !== undefined) marks.push(`epoch ${progress.epoch}`);
-    if (progress.step !== null && progress.step !== undefined) marks.push(`step ${progress.step}`);
-    if (marks.length) lines.push(el("div", { class: "job-progress", text: marks.join(" · ") }));
-
-    const metrics = Object.entries(progress.latest_metrics || {});
-    if (metrics.length) {
-      lines.push(
-        el(
-          "div",
-          { class: "job-metrics" },
-          metrics.map(([key, value]) =>
-            el("span", { class: "metric" }, el("span", { class: "metric-key", text: key }), " ",
-               el("span", { class: "metric-value", text: number(value) })),
-          ),
-        ),
-      );
-    }
-  }
 
   const actions = el(
     "div",
     { class: "panel-row-actions" },
-    el("button", { class: "btn btn-quiet", text: "log", onclick: () => handlers.logs(job.id) }),
-    state === "succeeded" || state === "failed"
+    isTerminal(state)
       ? el("button", { class: "btn btn-quiet", text: "analysis",
                        onclick: () => handlers.analysis(job.id) })
       : null,
@@ -232,7 +247,70 @@ export function jobRow(job, status, handlers) {
       : null,
   );
 
-  return el("div", { class: "panel-row job-row" }, body, ...lines, actions);
+  return el(
+    "div",
+    { class: `panel-row job-row ${isCurrent ? "is-current" : ""}` },
+    body,
+    ...progressLines(status && status.progress),
+    actions,
+  );
+}
+
+/**
+ * The header above a run's log: what it is, how far it got, and what you can do to it.
+ *
+ * Rebuilt on every poll rather than patched, for the same reason the assistant bubble is
+ * re-rendered rather than appended to — the state, the progress and which actions are legal
+ * all change together, and a half-updated header is worse than a rebuilt one.
+ */
+export function jobLogHead(job, status, handlers, options = {}) {
+  const state = (status && status.state) || job.state;
+
+  const tail = el(
+    "select",
+    { class: "joblog-tail", "aria-label": "How many lines to show",
+      onchange: (event) => handlers.tail(Number(event.target.value)) },
+    (options.tailChoices || []).map((lines) =>
+      el("option", { value: String(lines), selected: lines === options.tail, text: `tail ${lines}` })),
+  );
+
+  const follow = el(
+    "label",
+    { class: "joblog-follow", title: "Keep the newest line in view" },
+    el("input", { type: "checkbox", checked: options.follow,
+                  onchange: (event) => handlers.follow(event.target.checked) }),
+    "follow",
+  );
+
+  return el(
+    "div",
+    {},
+    el(
+      "div",
+      { class: "joblog-title" },
+      el("span", { class: `dot job-dot ${JOB_STATES[state] || ""}`, title: state }),
+      el("span", { class: "joblog-name", text: job.id, title: job.id }),
+      el("span", { class: "joblog-state", text: state }),
+    ),
+    ...progressLines(status && status.progress),
+    el(
+      "div",
+      { class: "joblog-actions" },
+      tail,
+      follow,
+      isTerminal(state)
+        ? el("button", { class: "btn btn-quiet", text: "analysis",
+                         onclick: () => handlers.analysis(job.id) })
+        : null,
+      state === "running"
+        ? el("button", { class: "btn btn-quiet btn-danger", text: "cancel",
+                         onclick: () => handlers.cancel(job.id) })
+        : null,
+      el("button", { class: "btn btn-quiet btn-close", text: "×", title: "Back to the chat",
+                     onclick: () => handlers.close() }),
+    ),
+    options.error ? el("div", { class: "joblog-error", text: options.error }) : null,
+  );
 }
 
 export function analysisReport(report) {

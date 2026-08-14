@@ -208,8 +208,8 @@ SSE collection helpers, so HTTP tests can assert on frame sequences.
 | `test_api_concurrency.py` | Overlapping predictions for different adapters cannot answer from the wrong one |
 | `test_api_security.py` | Loopback default, the refusal to bind elsewhere without a token, the 401, the `/health` exemption |
 | `test_ui_serving.py` | The client is served and is genuinely **self-contained** — the offline check is the one with teeth |
-| `test_ui_contract.py` | **The compiler this pair of languages does not have**: every field and event `ui/*.js` reads by name, so a server-side rename fails in `pytest` naming the client file |
-| `test_ui_browser.py` | Opt-in. The only tests that prove the JavaScript actually runs — streaming, the modal, the session rail's create/rename/delete, its resize surviving a reload, and that the thinking dots are dark at rest |
+| `test_ui_contract.py` | **The compiler this pair of languages does not have**: every field and event `ui/*.js` reads by name, so a server-side rename fails in `pytest` naming the client file. Also pins two client-side literals against the server — every `LOG_TAIL_CHOICES` value the tail dropdown offers, and every job state `render.js` must style |
+| `test_ui_browser.py` | Opt-in. The only tests that prove the JavaScript actually runs — streaming, the modal, the session rail's create/rename/delete, its resize surviving a reload, the thinking dots dark at rest, the activity bar swapping the rail and the centre column, and the grip resizing from the rail's own left edge |
 
 ## 7. Scenario tests
 

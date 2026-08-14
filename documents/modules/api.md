@@ -188,7 +188,13 @@ keeps answering.
 | `POST` | `/api/jobs/{id}/cancel` | 409 when not running, or when the PID cannot be proved to be ours |
 
 **Starting a job is deliberately not here.** It happens through the chat, behind the
-approval gate, so a human sees the exact command before GPU time is spent.
+approval gate, so a human sees the exact command before GPU time is spent. The browser's
+Jobs view is read-only plus cancel for the same reason — it has no "new run" button, and
+deleting a run stays a CLI action (`toolhub prune`).
+
+`GET /api/jobs/{id}/logs` is what the centre-column log view polls, every 3 s while the run
+is running. There is no follow endpoint and no SSE for jobs: `train.log` is a plain file a
+detached process appends to, so a tail read on a timer is the whole mechanism.
 
 ### Sessions
 

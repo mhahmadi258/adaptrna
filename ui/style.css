@@ -17,6 +17,8 @@
   --ok: #2f6f4f;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --radius: 8px;
+  /* The activity bar never collapses and never resizes — it is how you get the rail back. */
+  --activity-w: 3rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -98,21 +100,28 @@ select {
   min-height: 0;
   display: grid;
   /* `--rail-w` is set on :root by the drag handle and restored from localStorage. */
-  grid-template-columns: var(--rail-w, 15rem) minmax(0, 1fr) 22rem;
+  grid-template-columns: var(--activity-w) var(--rail-w, 15rem) minmax(0, 1fr) 22rem;
 }
 
 body.rail-collapsed { --rail-w: 0px; }
 body.rail-collapsed .rail { border-right: none; }
 
 @media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  .layout {
+    grid-template-columns: var(--activity-w) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .activity { grid-row: 1 / -1; }
+  .center, .side { grid-column: 2; }
   .side { border-left: none; border-top: 1px solid var(--line); max-height: 45vh; }
 
   /* Narrow screens have no column to spare, so the rail overlays the chat instead of
-     squeezing it — and the toggle in the topbar is how you dismiss it again. */
+     squeezing it — and the toggle in the topbar is how you dismiss it again. It starts at
+     the activity bar's right edge, not at 0: the bar is the only way back to the other
+     view, so the rail must never cover it. */
   .rail {
     position: fixed;
-    top: 0; bottom: 0; left: 0;
+    top: 0; bottom: 0; left: var(--activity-w);
     width: min(80vw, 18rem);
     z-index: 20;
     box-shadow: 0 0 2rem rgba(0, 0, 0, 0.25);
@@ -120,6 +129,53 @@ body.rail-collapsed .rail { border-right: none; }
   body.rail-collapsed .rail { display: none; }
   .rail-grip { display: none; }
 }
+
+/* ------------------------------------------------------------------ activity bar */
+
+.activity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.4rem 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.activity-btn {
+  position: relative;
+  width: 2.2rem;
+  height: 2.2rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--ink-soft);
+  cursor: pointer;
+  opacity: 0.6;
+}
+.activity-btn:hover { opacity: 1; background: var(--bg); }
+/* The same current-item idiom as `.session-row.is-current`. */
+.activity-btn[aria-selected="true"] { opacity: 1; box-shadow: inset 2px 0 0 var(--accent); }
+.activity-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* A run is going, whichever view is open. Reuses the `pulse` keyframes below. */
+.activity-dot {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 1.4s infinite;
+}
+.activity-dot[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .activity-dot { animation: none; } }
 
 /* ------------------------------------------------------------------ rail */
 
@@ -203,9 +259,51 @@ body.rail-collapsed .rail { border-right: none; }
 .rail-grip:hover, .rail-grip:focus-visible { background: var(--accent); outline: none; }
 body.rail-resizing { cursor: col-resize; user-select: none; }
 
-/* ------------------------------------------------------------------ chat */
+/* ------------------------------------------------------------------ centre column */
 
-.chat { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* Holds the chat and the job log; exactly one of them is unhidden at a time. */
+.center { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
+.chat { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* Both of these get an author `display`, so both need this — see the note on `.thinking`. */
+.chat[hidden] { display: none; }
+
+/* ------------------------------------------------------------------ job log */
+
+.joblog { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.joblog[hidden] { display: none; }
+
+.joblog-head {
+  flex: none;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.joblog-title { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+.joblog-name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.joblog-state { color: var(--ink-faint); font-size: 0.78rem; }
+.joblog-actions { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; flex-wrap: wrap; }
+.joblog-actions .btn-close { margin-left: auto; }
+.joblog-tail { font-size: 0.78rem; padding: 0.15rem 0.3rem; }
+.joblog-follow { display: flex; align-items: center; gap: 0.25rem; font-size: 0.78rem; color: var(--ink-soft); }
+.joblog-error { margin-top: 0.4rem; font-size: 0.8rem; color: var(--fail); }
+
+/* `pre`, not `pre-wrap`: a training log is progress bars and aligned columns, and wrapping
+   them is precisely what makes them unreadable. It scrolls in its own box, so the page
+   never scrolls sideways. */
+.joblog-body {
+  flex: 1;
+  margin: 0;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--ink-soft);
+}
+
+/* ------------------------------------------------------------------ chat */
 
 .chat-log {
   flex: 1;
@@ -424,6 +522,28 @@ body.rail-resizing { cursor: col-resize; user-select: none; }
 .job-dot.is-fail { background: var(--fail); }
 
 .tool-row.is-disabled .panel-name { color: var(--ink-faint); text-decoration: line-through; }
+
+/* Job rows live in the rail now, which is a plain block rather than a `.panel-list` flex
+   column, so they space themselves. */
+.rail-list .panel-row + .panel-row { margin-top: 0.3rem; }
+
+/* The id is the click target that opens the log — the same shape as `.session-open`. */
+.job-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  font-family: var(--mono);
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-row.is-current { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
 
 .job-progress { font-family: var(--mono); font-size: 0.76rem; color: var(--ink-soft); }
 .job-metrics { display: flex; flex-wrap: wrap; gap: 0.4rem; font-size: 0.74rem; }

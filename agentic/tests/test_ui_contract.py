@@ -273,6 +273,54 @@ def test_the_jobs_panel_fields(client):
         assert field in status["progress"]
 
 
+def test_the_job_log_payload_fields(client):
+    """Phase 11 put the log in the centre column, on a timer. It reads `body.log` by name."""
+    test_client, tmp_path = client
+    job_id = _finished_job(tmp_path)
+
+    body = test_client.get(f"/api/jobs/{job_id}/logs?tail=200").json()
+
+    for field in ("job_id", "tail", "log"):
+        assert field in body
+    assert body["tail"] == 200
+    assert isinstance(body["log"], str)
+
+
+def test_every_tail_the_client_offers_is_one_the_api_accepts(client):
+    """The tail dropdown is a fixed list in `app.js`; the endpoint caps `tail` at 2000.
+
+    A choice past the cap is a 422 the user sees as an empty log, so the list is read out
+    of the client and every value in it is asked of the real server.
+    """
+    test_client, tmp_path = client
+    job_id = _finished_job(tmp_path)
+
+    source = (UI_DIR / "app.js").read_text()
+    match = re.search(r"LOG_TAIL_CHOICES = \[([\d, ]+)\]", source)
+    assert match, "app.js no longer declares LOG_TAIL_CHOICES as a literal list"
+
+    choices = [int(value) for value in match.group(1).split(",")]
+    assert choices, "the dropdown would render empty"
+
+    for tail in choices:
+        response = test_client.get(f"/api/jobs/{job_id}/logs?tail={tail}")
+        assert response.status_code == 200, f"the client offers tail={tail}, the API refuses it"
+
+
+def test_the_job_row_names_every_state_the_store_can_hold():
+    """A state with no entry in the client's map draws a colourless dot.
+
+    That is how `cancelled` shipped in Phase 9 and survived Phase 10: indistinguishable
+    from a run that had not started.
+    """
+    from adaptrna_agentic.jobs.store import RUNNING_STATES, TERMINAL_STATES
+
+    browser = (UI_DIR / "render.js").read_text()
+
+    for job_state in (*RUNNING_STATES, *TERMINAL_STATES):
+        assert f"{job_state}:" in browser, f"render.js never styles a '{job_state}' job"
+
+
 def test_the_analysis_view_fields(client):
     test_client, tmp_path = client
     job_id = _finished_job(tmp_path)

@@ -13,6 +13,13 @@ import * as ui from "./render.js";
 const $ = (id) => document.getElementById(id);
 
 const JOB_POLL_MS = 3000;
+//: Nothing is running, so nothing is changing fast — but a run started from the chat still
+//: has to show up in the rail without a reload, which the old "stop polling when idle"
+//: never did.
+const JOB_IDLE_POLL_MS = 15000;
+//: The API caps `tail` at 2000 (`routers/jobs.py`); `test_ui_contract.py` reads this list
+//: and asks the server to honour every value in it.
+const LOG_TAIL_CHOICES = [200, 500, 2000];
 
 //: Markdown is re-parsed from the whole reply on each repaint, so tokens are coalesced
 //: into frames rather than repainting per delta.
@@ -23,6 +30,7 @@ const MARKDOWN_REPAINT_MS = 80;
 //: with the tab. A width that reset on every tab would just be an annoyance.
 const RAIL_WIDTH_KEY = "adaptrna.rail.width";
 const RAIL_COLLAPSED_KEY = "adaptrna.rail.collapsed";
+const RAIL_VIEW_KEY = "adaptrna.rail.view";
 const RAIL_MIN_REM = 10;
 const RAIL_MAX_REM = 30;
 
@@ -32,7 +40,19 @@ const state = {
   streaming: false,
   jobsTimer: null,
   sessions: [], // the last fetched list, so filtering does not need a round trip
-  filter: "",
+
+  //: `view` and `job` are *which pane is on screen* — chrome, like the rail's width, and
+  //: nothing the server could disagree with. `jobs` / `jobStatus` are a render cache of a
+  //: list the server owns, exactly like `sessions`.
+  view: "sessions", // "sessions" | "jobs"
+  job: null, // the run whose log has replaced the chat, if any
+  jobs: [],
+  jobStatus: {}, // id → the per-job status call, which is the only source of progress
+  filter: { sessions: "", jobs: "" }, // per view, so a needle does not follow you across
+  logTimer: null,
+  logTail: LOG_TAIL_CHOICES[0],
+  logFollow: true,
+  logError: null,
 };
 
 // ------------------------------------------------------------------ chat
@@ -125,6 +145,9 @@ async function consume(run) {
       case "approval_required":
         closeBubble();
         state.pending = data;
+        // The modal would render fine over a log, but the gate's whole value is that the
+        // human sees what led here. Put the conversation back first.
+        closeJob();
         showApproval(data);
         break;
 
@@ -223,63 +246,89 @@ async function refreshTools() {
   for (const entry of tools) list.append(ui.toolRow(entry, handlers));
 }
 
+/**
+ * Poll the job store, whichever view is open.
+ *
+ * This runs all the time now, not only while something is running: a run started from the
+ * chat has to appear in the rail on its own, and the dot on the Jobs icon is only honest if
+ * something is counting. The expensive half — the per-job status call, which is the only
+ * source of progress — fires only when something on screen would render it.
+ */
 async function refreshJobs() {
   clearTimeout(state.jobsTimer);
+
+  // Polling a job store from a tab nobody is looking at is pure load; `visibilitychange`
+  // starts it again, so nothing is lost by simply not re-arming here.
+  if (document.visibilityState === "hidden") return;
 
   let jobs;
   try {
     jobs = await api.jobs();
   } catch {
-    // The panel keeps its last good render rather than blanking — but it must keep
+    // The rail keeps its last good render rather than blanking — but it must keep
     // polling. Phase 7's optimistic concurrency answers 409 while the job store is
     // mid-write, which is most likely *just after a run starts*: exactly when someone is
-    // watching this panel. Returning without re-arming froze the monitor for good.
+    // watching. Returning without re-arming froze the monitor for good.
     state.jobsTimer = setTimeout(refreshJobs, JOB_POLL_MS);
     return;
   }
 
-  // `list` is cheap and has no progress; only running jobs are worth a second call.
-  const statuses = await Promise.all(
-    jobs.map((job) => (job.state === "running" ? api.job(job.id).catch(() => null) : null)),
-  );
+  state.jobs = jobs;
+  const running = jobs.filter((job) => job.state === "running");
 
-  const list = ui.clear($("jobs-list"));
-  if (!jobs.length) {
-    list.append(ui.noticeMessage("No training runs yet."));
+  // A finished run's cached status still says "running"; drop it so the row falls back to
+  // the state the list just reported.
+  for (const job of jobs) {
+    if (job.state !== "running") delete state.jobStatus[job.id];
   }
 
-  const handlers = {
-    logs: async (id) => {
-      try {
-        const body = await api.jobLogs(id, 200);
-        showInspector(`${id} — log`, body.log || "(empty)");
-      } catch (error) {
-        showInspector(`${id} — log`, error.message);
-      }
-    },
-    analysis: async (id) => {
-      try {
-        showInspector(`${id} — analysis`, null, ui.analysisReport(await api.jobAnalysis(id)));
-      } catch (error) {
-        showInspector(`${id} — analysis`, error.message);
-      }
-    },
-    cancel: async (id) => {
-      try {
-        await api.cancelJob(id);
-      } catch (error) {
-        showInspector(`${id} — cancel`, error.message);
-      }
-      refreshJobs();
-    },
-  };
-
-  jobs.forEach((job, index) => list.append(ui.jobRow(job, statuses[index], handlers)));
-
-  if (jobs.some((job) => job.state === "running")) {
-    state.jobsTimer = setTimeout(refreshJobs, JOB_POLL_MS);
+  if (state.view === "jobs") {
+    const statuses = await Promise.all(running.map((job) => api.job(job.id).catch(() => null)));
+    running.forEach((job, index) => {
+      if (statuses[index]) state.jobStatus[job.id] = statuses[index];
+    });
   }
+
+  $("activity-dot").hidden = running.length === 0;
+  renderJobsRail();
+
+  state.jobsTimer = setTimeout(refreshJobs, running.length ? JOB_POLL_MS : JOB_IDLE_POLL_MS);
 }
+
+const jobHandlers = {
+  select: (id) => openJob(id),
+
+  close: () => closeJob(),
+
+  tail: (lines) => {
+    state.logTail = lines;
+    state.logFollow = true; // asking for more lines means asking to see them
+    refreshJobLog();
+  },
+
+  follow: (on) => {
+    state.logFollow = on;
+    if (on) scrollLog();
+  },
+
+  analysis: async (id) => {
+    try {
+      showInspector(`${id} — analysis`, null, ui.analysisReport(await api.jobAnalysis(id)));
+    } catch (error) {
+      showInspector(`${id} — analysis`, error.message);
+    }
+  },
+
+  cancel: async (id) => {
+    try {
+      await api.cancelJob(id);
+    } catch (error) {
+      showInspector(`${id} — cancel`, error.message);
+    }
+    refreshJobs();
+    if (state.job === id) refreshJobLog();
+  },
+};
 
 function refreshPanels() {
   refreshTools();
@@ -291,6 +340,91 @@ function showInspector(title, text, node) {
   $("inspector-title").textContent = title;
   const body = ui.clear($("inspector-body"));
   body.append(node || ui.el("pre", { class: "inspector-pre", text: text ?? "" }));
+}
+
+// ------------------------------------------------------------------ job log
+
+const scrollLog = () => {
+  const pre = $("joblog-body");
+  pre.scrollTop = pre.scrollHeight;
+};
+
+/** Open `id`'s log in place of the chat. The chat is hidden, never torn down. */
+function openJob(id) {
+  state.job = id;
+  state.logFollow = true;
+  state.logError = null;
+  $("chat").hidden = true;
+  $("joblog").hidden = false;
+  $("joblog-body").textContent = "";
+  renderJobsRail();
+
+  // Paint the header from what the rail already knows before the first poll returns,
+  // otherwise the pane is entirely blank for a round trip.
+  renderJobLogHead(state.jobStatus[id] || null);
+  refreshJobLog();
+}
+
+function closeJob() {
+  if (!state.job) return;
+  clearTimeout(state.logTimer);
+  state.job = null;
+  state.logError = null;
+  $("joblog").hidden = true;
+  $("chat").hidden = false;
+  renderJobsRail();
+  scrollChat();
+  $("composer-input").focus();
+}
+
+function renderJobLogHead(status) {
+  const job = state.jobs.find((entry) => entry.id === state.job) || { id: state.job, state: "unknown" };
+  ui.clear($("joblog-head")).append(
+    ui.jobLogHead(job, status, jobHandlers, {
+      tail: state.logTail,
+      tailChoices: LOG_TAIL_CHOICES,
+      follow: state.logFollow,
+      error: state.logError,
+    }),
+  );
+}
+
+/**
+ * One poll of the open run: its status (for state and progress) and its log tail.
+ *
+ * There is no streaming endpoint and this phase did not add one — `train.log` is a plain
+ * file a detached process appends to, so a tail read on a timer is the whole mechanism.
+ */
+async function refreshJobLog() {
+  clearTimeout(state.logTimer);
+
+  const id = state.job;
+  if (!id || document.visibilityState === "hidden") return;
+
+  let status;
+  let body;
+  try {
+    [status, body] = await Promise.all([api.job(id), api.jobLogs(id, state.logTail)]);
+  } catch (error) {
+    if (state.job !== id) return;
+    state.logError = error.message;
+    renderJobLogHead(null);
+    // A 404 means the run's directory is gone; there is nothing to come back for. Anything
+    // else — the retryable 409 the job store answers mid-write, a dropped connection —
+    // keeps the last good body on screen and tries again.
+    if (error.status !== 404) state.logTimer = setTimeout(refreshJobLog, JOB_POLL_MS);
+    return;
+  }
+
+  if (state.job !== id) return; // the reader moved on while this was in flight
+
+  state.logError = null;
+  renderJobLogHead(status);
+
+  $("joblog-body").textContent = body.log || "(nothing in the log yet)";
+  if (state.logFollow) scrollLog();
+
+  if (status.state === "running") state.logTimer = setTimeout(refreshJobLog, JOB_POLL_MS);
 }
 
 // ------------------------------------------------------------------ sessions
@@ -352,9 +486,11 @@ async function refreshSessions(select = null) {
   renderSessions();
 }
 
-/** Pure render from `state.sessions` + `state.filter`, so typing in the filter is local. */
+/** Pure render from `state.sessions` + the needle, so typing in the filter is local. */
 function renderSessions() {
-  const needle = state.filter.trim().toLowerCase();
+  if (state.view !== "sessions") return; // the rail is showing runs; do not clobber it
+
+  const needle = state.filter.sessions.trim().toLowerCase();
   const shown = needle
     ? state.sessions.filter((s) => s.id.toLowerCase().includes(needle))
     : state.sessions;
@@ -370,6 +506,33 @@ function renderSessions() {
   }
 }
 
+/** The same, for runs. Both views render into `#rail-list`; only one owns it at a time. */
+function renderJobsRail() {
+  if (state.view !== "jobs") return;
+
+  const needle = state.filter.jobs.trim().toLowerCase();
+  const shown = needle
+    ? state.jobs.filter((job) => job.id.toLowerCase().includes(needle))
+    : state.jobs;
+
+  const list = ui.clear($("rail-list"));
+  if (!shown.length) {
+    // There is no "＋ New run" button and never will be — starting a run is a gated action
+    // in the chat, so the human sees the exact command first. Say so here, where someone
+    // would otherwise go looking for the button.
+    list.append(ui.noticeMessage(
+      needle
+        ? "No matching runs."
+        : "No training runs yet. Runs start from the chat, behind the approval gate.",
+    ));
+    return;
+  }
+
+  for (const job of shown) {
+    list.append(ui.jobRow(job, state.jobStatus[job.id], jobHandlers, job.id === state.job));
+  }
+}
+
 /** A mutation mid-turn would race the stream that is writing to the same thread. */
 function busyWithATurn() {
   if (state.streaming || state.pending) {
@@ -381,6 +544,7 @@ function busyWithATurn() {
 
 const sessionHandlers = {
   select: (id) => {
+    closeJob(); // picking a conversation is the other way back from a log
     if (id === state.session || busyWithATurn()) return;
     loadSession(id).then(renderSessions);
   },
@@ -441,6 +605,54 @@ async function newSession() {
 
 // ------------------------------------------------------------------ rail chrome
 
+//: What each activity-bar button does to the rail. An object rather than a `switch`,
+//: because `test_ui_contract.py` reads every `case "…"` in this file and asserts the set is
+//: exactly the six streamed event names.
+const RAIL_VIEWS = {
+  sessions: { label: "Sessions", placeholder: "Filter sessions…", render: () => renderSessions() },
+  jobs: { label: "Jobs", placeholder: "Filter runs…", render: () => renderJobsRail() },
+};
+
+function setView(next) {
+  const view = RAIL_VIEWS[next] ? next : "sessions";
+  const changed = state.view !== view;
+  const chrome = RAIL_VIEWS[view];
+
+  state.view = view;
+  localStorage.setItem(RAIL_VIEW_KEY, view);
+
+  $("activity-sessions").setAttribute("aria-selected", String(view === "sessions"));
+  $("activity-jobs").setAttribute("aria-selected", String(view === "jobs"));
+  $("rail").setAttribute("aria-label", chrome.label);
+  $("rail-new").hidden = view !== "sessions"; // there is no "new run" — see `renderJobsRail`
+
+  const filter = $("rail-filter");
+  filter.placeholder = chrome.placeholder;
+  filter.setAttribute("aria-label", chrome.placeholder);
+  filter.value = state.filter[view];
+
+  chrome.render();
+
+  // Switching *to* runs should not show a list up to `JOB_IDLE_POLL_MS` old.
+  if (changed && view === "jobs") refreshJobs();
+}
+
+function installActivity() {
+  const pick = (view) => () => {
+    // VS Code's behaviour, and what an icon bar makes people expect: clicking the view you
+    // are already on toggles the rail rather than re-rendering it.
+    if (state.view === view) {
+      setRailCollapsed(!document.body.classList.contains("rail-collapsed"));
+      return;
+    }
+    setRailCollapsed(false); // switching views with the rail shut would show nothing
+    setView(view);
+  };
+
+  $("activity-sessions").addEventListener("click", pick("sessions"));
+  $("activity-jobs").addEventListener("click", pick("jobs"));
+}
+
 function setRailCollapsed(collapsed) {
   document.body.classList.toggle("rail-collapsed", collapsed);
   $("rail-toggle").setAttribute("aria-expanded", String(!collapsed));
@@ -463,8 +675,8 @@ function installRail() {
 
   $("rail-new").addEventListener("click", newSession);
   $("rail-filter").addEventListener("input", (event) => {
-    state.filter = event.target.value;
-    renderSessions();
+    state.filter[state.view] = event.target.value;
+    RAIL_VIEWS[state.view].render();
   });
 
   const grip = $("rail-grip");
@@ -475,7 +687,12 @@ function installRail() {
     grip.setPointerCapture(event.pointerId);
     document.body.classList.add("rail-resizing");
 
-    const onMove = (move) => setRailWidth(move.clientX / rootFontSize);
+    // Measured from the rail's own left edge, not the viewport's: the activity bar sits to
+    // its left, and `clientX` alone reported every width 3rem too wide. The edge cannot
+    // move during a drag, so reading it once here is enough.
+    const railLeft = $("rail").getBoundingClientRect().left;
+
+    const onMove = (move) => setRailWidth((move.clientX - railLeft) / rootFontSize);
     const onUp = () => {
       grip.removeEventListener("pointermove", onMove);
       grip.removeEventListener("pointerup", onUp);
@@ -550,6 +767,27 @@ async function boot() {
   $("approval-decline").addEventListener("click", () => decide(false));
   $("inspector-close").addEventListener("click", () => ($("inspector").hidden = true));
   installRail();
+  installActivity();
+
+  // Reading a log usually means reading something that already scrolled past, so following
+  // the tail is a consequence of being at the bottom rather than a mode you are stuck in.
+  $("joblog-body").addEventListener("scroll", () => {
+    const pre = $("joblog-body");
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+    if (atBottom === state.logFollow) return;
+
+    state.logFollow = atBottom;
+    // Tick the box directly rather than rebuilding the header on a scroll event.
+    const box = $("joblog-head").querySelector(".joblog-follow input");
+    if (box) box.checked = atBottom;
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    refreshJobs();
+    if (state.job) refreshJobLog();
+  });
+
   $("health").addEventListener("click", async () => {
     try {
       const report = await api.doctor();
@@ -573,6 +811,9 @@ async function boot() {
   await loadSession(initial);
   await refreshSessions(initial);
   refreshPanels();
+  // After the sessions are cached, so booting straight into the Jobs view still leaves a
+  // populated rail behind it.
+  setView(localStorage.getItem(RAIL_VIEW_KEY));
 
   $("composer-input").focus();
 }
