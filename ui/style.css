@@ -89,7 +89,6 @@ select {
   cursor: pointer;
   font-family: inherit;
 }
-.badge-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
 .badge-warn { color: var(--warn); background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
 .badge-fail { color: var(--fail); background: var(--fail-bg); border-color: color-mix(in srgb, var(--fail) 35%, transparent); }
 

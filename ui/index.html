@@ -13,7 +13,9 @@
   <button id="rail-toggle" class="btn btn-quiet rail-toggle" type="button"
           aria-controls="rail" aria-expanded="true" title="Show or hide the session list">☰</button>
   <div class="brand">Adapt<span>RNA</span></div>
-  <button id="health" class="badge" type="button" title="Install health">checking…</button>
+  <!-- Hidden unless it has something to report: a degraded install, or a server that has
+       gone away. `refreshHealth` unhides it, and it is the way to the doctor report. -->
+  <button id="health" class="badge" type="button" hidden></button>
 </header>
 
 <main class="layout">

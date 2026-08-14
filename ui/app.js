@@ -738,17 +738,30 @@ async function ensureAuth() {
   }
 }
 
+/**
+ * The health badge, which is silent when there is nothing to say.
+ *
+ * A permanent "install: ok" is a line of chrome that reports the expected case forever; it
+ * earns its place in the topbar only when the install is degraded or the server has gone
+ * away — which is also exactly when the doctor report behind it is worth reaching.
+ */
 async function refreshHealth() {
   const badge = $("health");
+  badge.title = "Click for the full doctor report";
+
   try {
     const body = await api.health();
     // `failed_checks` is the doctor's list of failed check names — and an empty array is
     // truthy in JS, so it has to be counted rather than tested.
     const failed = (body.failed_checks || []).length;
+
+    badge.hidden = body.install === "ok" && !failed;
+    if (badge.hidden) return;
+
     badge.textContent = failed ? `install: ${body.install} (${failed} failed)` : `install: ${body.install}`;
-    badge.className = `badge ${body.install === "ok" ? "badge-ok" : "badge-warn"}`;
-    badge.title = failed ? "Click for the full doctor report" : "Install healthy";
+    badge.className = "badge badge-warn";
   } catch {
+    badge.hidden = false;
     badge.textContent = "server unreachable";
     badge.className = "badge badge-fail";
   }

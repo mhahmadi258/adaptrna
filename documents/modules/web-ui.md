@@ -204,7 +204,12 @@ row in the rail, so rendering the list first would leave nothing highlighted. `s
 it.
 
 `refreshHealth` counts `failed_checks` rather than testing it, because **an empty array is
-truthy in JS**. Clicking the badge opens the full doctor report in the inspector.
+truthy in JS**.
+
+**The badge is hidden while the install is healthy.** A permanent "install: ok" reports the
+expected case forever; it unhides only for a degraded install or a server that has gone away
+— which is also exactly when the doctor report behind it is worth reaching. Clicking it opens
+that report in the inspector, and it is the only route to `/api/doctor` from the browser.
 
 ## 6. `render.js`, `md.js`, `dom.js`
 

@@ -512,6 +512,43 @@ def test_the_grip_resizes_from_the_rails_own_left_edge(page):
     assert width == pytest.approx(360 - bar, abs=4), "the rail's edge did not land under the pointer"
 
 
+def test_the_health_badge_is_silent_on_a_healthy_install(page):
+    """A permanent "install: ok" reports the expected case forever, so the badge now
+    appears only when it has news.
+
+    `/health` is stubbed rather than taken from the fixture: the nano registry is not a
+    complete install and reports itself as such, which is correct — and would make this
+    test about the fixture rather than about the badge.
+    """
+    page, base, _ = page
+    page.route("**/health", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body='{"status": "ok", "install": "ok", "failed_checks": []}'))
+
+    _open(page, base, "browser_health")
+    page.wait_for_selector(".tool-row")
+
+    assert not page.is_visible("#health")
+
+
+def test_the_health_badge_speaks_up_when_the_install_is_degraded(page):
+    page, base, _ = page
+    page.route("**/health", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body='{"status": "degraded", "install": "degraded",'
+             ' "failed_checks": ["backbone", "cuda"]}'))
+
+    _open(page, base, "browser_degraded")
+
+    page.wait_for_selector("#health:not([hidden])")
+    assert "install: degraded (2 failed)" in page.inner_text("#health")
+
+    # It is still the only way to the doctor report from the browser.
+    page.click("#health")
+    page.wait_for_selector("#inspector:not([hidden])")
+    assert "doctor" in page.inner_text("#inspector-title").lower()
+
+
 def test_the_thinking_dots_are_dark_at_rest(page):
     """The dots animated from page load for the whole of Phase 9: `.thinking` set an
     author-origin `display`, which beats the user agent's `[hidden] { display: none }`."""
