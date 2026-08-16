@@ -294,8 +294,18 @@ at another is how you get a green report for something that then fails on first 
 | `land(stage)` | Copy into `<repo>/adaptrna_custom/`, creating the task's `__init__.py` if new. Returns the written paths. **The gated step.** |
 | `discard(stage)` | `shutil.rmtree`, used between failed attempts |
 
-`Stage.summary()` gives `[{path, lines}]` and `Stage.diff()` renders every file with a
-`new file` / `modified` marker — both go straight into the approval payload.
+`Stage.summary()` gives `[{path, lines}]`. The `{path, lines, content}` triples that go into
+the approval payload are built in `agents/orchestrator.py::_details`, so the approval window
+can render the code inline.
+
+**Landing a `kind="tool"` stage** (`land_generated_code` in `tool_factory.py`) does one
+extra step after writing the file: it evicts the stale staging-directory copy of the module
+from `sys.modules` (the verification pipeline imported it from there), calls
+`discovery.ensure_importable()` to put the repo root on `sys.path`, then calls
+`registry.register_external(stage.module_path)` — so the tool is **registered and active
+immediately** after approval, with no separate CLI step. The `sys.modules` eviction is
+necessary because Python caches the staging-path import; without it the landed file would
+be shadowed by the old cached module.
 
 ## 6. `discovery.py`
 

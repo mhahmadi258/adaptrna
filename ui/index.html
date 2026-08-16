@@ -87,6 +87,18 @@
   </div>
 </div>
 
+<script src="/ui/vendor/monaco/vs/loader.js"></script>
+<script>
+  require.config({ paths: { vs: "/ui/vendor/monaco/vs" } });
+  self.MonacoEnvironment = {
+    getWorkerUrl: function () {
+      return URL.createObjectURL(new Blob(
+        ['importScripts("/ui/vendor/monaco/vs/base/worker/workerMain.js");'],
+        { type: "text/javascript" }
+      ));
+    },
+  };
+</script>
 <script type="module" src="/ui/app.js"></script>
 </body>
 </html>

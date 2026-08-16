@@ -81,3 +81,30 @@ def test_the_ui_mount_does_not_shadow_the_api(client):
 def test_a_missing_asset_is_404_not_the_shell(client):
     """A typo'd import should fail loudly rather than silently return HTML."""
     assert client.get("/ui/nope.js").status_code == 404
+
+
+def test_vendored_monaco_loader_is_served(client):
+    """Monaco is vendored locally — served from /ui/vendor/monaco/vs/loader.js, not a CDN.
+    This test proves the static mount covers the vendor tree and Monaco is actually present."""
+    response = client.get("/ui/vendor/monaco/vs/loader.js")
+
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+    assert len(response.content) > 1000    # not an empty file
+
+
+def test_index_loads_monaco_from_local_vendor(client):
+    """The shell must reference the locally vendored Monaco loader, never a CDN."""
+    body = client.get("/").text
+
+    assert "/ui/vendor/monaco/vs/loader.js" in body
+    # Belt-and-suspenders: the EXTERNAL regex from the offline test must still pass
+    # (the offline test covers all named ASSETS; this covers index.html explicitly).
+    import re
+    EXTERNAL = re.compile(
+        r"""(?:src|href)\s*=\s*["'](?:https?:)?//"""
+        r"""|url\(\s*["']?(?:https?:)?//"""
+        r"""|(?:^|\s)(?:from|import)\s*\(?\s*["'](?:https?:)?//""",
+        re.MULTILINE,
+    )
+    assert EXTERNAL.search(body) is None, "index.html fetches from an external host"

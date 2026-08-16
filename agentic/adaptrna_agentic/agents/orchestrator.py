@@ -136,9 +136,11 @@ def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[
 
         stage = staged(args.get("stage_id", ""))
         if stage is not None:
-            details["files"] = stage.summary()
+            details["files"] = [
+                {"path": d, "lines": len(c.splitlines()), "content": c}
+                for d, c in sorted(stage.files.items())
+            ]
             details["staging_path"] = str(stage.package_dir)
-            details["diff"] = stage.diff()
 
     return details
 

@@ -26,8 +26,12 @@ Served by the API at `/` — open a running server, or launch one with
 ## 1. No build step, and why
 
 Plain ES modules and one stylesheet, loaded straight by the browser. No `package.json`, no
-bundler, no `node_modules`. The UI ships with `pip install -e ./agentic` and works offline,
-because nothing is fetched from a CDN.
+bundler, no `node_modules`. The UI ships with `pip install -e ./agentic` and works offline.
+
+One deliberate exception: the Monaco code editor (VS Code's editor engine) is **vendored
+locally** under `ui/vendor/monaco/vs/` and served by the API at `/ui/vendor/monaco/vs/*`.
+It is loaded from there, never from a CDN — the offline guarantee is unchanged.
+`test_ui_serving.py` still asserts no asset reaches for an external host.
 
 This was a deliberate reversal of the master plan's React default, decided on **fit rather
 than feasibility** (Node 20 was available):
@@ -59,14 +63,15 @@ alone.
 
 | File | Lines | What it does |
 |---|---:|---|
-| `index.html` | 90 | The shell: topbar (rail toggle, brand, health badge), activity bar, the rail, the centre column (chat **or** job log), tools/inspector sidebar, and the approval modal skeleton. Loads `/ui/app.js` as a module. |
-| `app.js` | 821 | Wiring — the activity bar, both rail views, job and log polling, the event dispatch for a turn |
+| `index.html` | ~100 | The shell: topbar (rail toggle, brand, health badge), activity bar, the rail, the centre column (chat **or** job log), tools/inspector sidebar, and the approval modal skeleton. Loads the vendored Monaco AMD loader, then `/ui/app.js` as a module. |
+| `app.js` | ~900 | Wiring — the activity bar, both rail views, job and log polling, the event dispatch for a turn, Monaco editor lifecycle (create/dispose per approval dialog) |
 | `sse.js` | 105 | SSE over `fetch`: a pure frame parser plus a thin transport |
 | `api.js` | 114 | The endpoints as functions, and the bearer token when one is configured |
-| `render.js` | 394 | Messages, session rows, tool rows, job rows, the job-log header, test/analysis reports, the approval modal body |
+| `render.js` | ~460 | Messages, session rows, tool rows, job rows, the job-log header, test/analysis reports, the approval modal body (including the tabbed code-editor panel when file content is present) |
 | `md.js` | 180 | A small Markdown renderer — the model writes tables, and raw pipes are unreadable |
 | `dom.js` | 34 | The shared `el()` / `clear()` helpers |
-| `style.css` | 652 | One stylesheet, light and dark |
+| `style.css` | ~700 | One stylesheet, light and dark |
+| `vendor/monaco/vs/` | — | Vendored Monaco editor (v0.52.x), served at `/ui/vendor/monaco/vs/*`. Never fetched from a CDN. |
 
 ## 3. `sse.js` — the only real client logic
 
@@ -222,7 +227,12 @@ here.
 (returning `{node, set(markdown)}`), `toolCallRow`, `toolResultRow`, `errorMessage`,
 `noticeMessage`, `toolRow(entry, handlers)`, `testResult(report)`, `progressLines(progress)`,
 `jobRow(job, status, handlers, isCurrent)`, `jobLogHead(job, status, handlers, options)`,
-`analysisReport(report)`, `approvalBody(request)`.
+`analysisReport(report)`, `approvalBody(request)`, `editorMountFiles(mount)`.
+
+`approvalBody` now embeds a **tabbed code editor** when the approval payload's `files` entries
+include a `content` field (which `land_generated_code` approvals do). One browser-style tab
+per file; clicking a tab switches the Monaco model. The editor is read-only. `editorMountFiles`
+is a companion accessor that `app.js` uses to retrieve the file list after DOM insertion.
 
 `progressLines` is shared by the rail row and the log header so epoch/step and the metric
 chips render identically in both.
@@ -344,6 +354,8 @@ cd agentic
   exceptions are caches and chrome — `state.sessions` / `state.jobs` (so filtering is local),
   the rail's persisted geometry, and which view and run are on screen. None of it can
   disagree with the server, which is the condition §1's tripwire now turns on.
+* **Monaco is vendored, not CDN.** `ui/vendor/monaco/vs/` ships in the repo (a few MB) and
+  is served by the same static mount as the rest of `ui/`. The offline guarantee is unchanged.
 * **The job log is a polled tail, not a stream.** `GET /api/jobs/{id}/logs?tail=N` every 3 s
   while the run is running; there is no follow endpoint, no SSE for jobs, and `tail` is
   capped at 2000 lines server-side. A log longer than the chosen tail loses its head.

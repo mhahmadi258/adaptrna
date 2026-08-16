@@ -649,3 +649,60 @@ body.rail-resizing { cursor: col-resize; user-select: none; }
 }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
+/* ------------------------------------------------------------------ code editor (approval) */
+
+/* Widen the modal when it carries an editor so code doesn't wrap at 46rem. */
+.modal:has(.approval-code-editor) { width: min(72rem, 100%); }
+
+.approval-code-panel { margin: 0.6rem 0; }
+
+.approval-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.approval-tabs::-webkit-scrollbar { display: none; }
+
+.approval-tab {
+  padding: 0.35rem 0.75rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--ink-faint);
+  cursor: pointer;
+  white-space: nowrap;
+  translate: 0 1px; /* sit on top of the tab bar border */
+}
+.approval-tab:hover { color: var(--ink); background: var(--bg); }
+.approval-tab-active {
+  color: var(--ink);
+  background: var(--panel);
+  border-color: var(--line);
+}
+
+.approval-code-editor {
+  height: min(50vh, 30rem);
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+}
+
+/* Plain-text fallback when Monaco fails to load. */
+.approval-code-editor-fallback {
+  overflow: auto;
+  padding: 0.5rem;
+}
+.approval-code-editor-fallback pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  white-space: pre;
+}

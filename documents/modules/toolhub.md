@@ -106,7 +106,7 @@ immediately.
 | `list()` | Entries sorted by name |
 | `get(name)` | `KeyError` listing the known tools |
 | `register(adapter_path, *, name, description, batch_size, test_sequences, link)` | Validate → copy → save → move. Returns the `ToolEntry`. |
-| `register_external(module_path, *, only)` | One entry per wrapper function, named `<family>_<function>`. Refuses the **whole batch** before writing anything if any name collides. |
+| `register_external(module_path, *, only)` | One entry per wrapper function, named `<family>_<function>`. Calls `discovery.ensure_importable()` first so `adaptrna_custom.tools.*` wrappers resolve. Refuses the **whole batch** before writing anything if any name collides. |
 | `activate(name)` / `deactivate(name)` | Flip `state`; routing-level only |
 | `remove(name, *, keep_artifact)` | Delete the entry, then the artifact — but only if `_owns()` it (inside `toolhub_data/adapters/`). A `--link`ed source is never touched. |
 | `verify()` | `{missing_artifacts, orphan_artifacts}` — manifest ↔ disk in both directions. Read-only; feeds `doctor` and `prune`. |
@@ -364,6 +364,11 @@ if not contract.is_available(spec.package):
 registry.register_external("adaptrna_agentic.toolhub.external.vienna")
 contract.run_golden(registry.get("vienna_fold"))
 ```
+
+Generated wrappers in `adaptrna_custom/tools/` are importable because
+`register_external` (and `build_agent_tools` at startup) calls `discovery.ensure_importable()`,
+which puts the repo root on `sys.path`. Built-in wrappers like `vienna.py` live inside the
+installed package and have always been importable.
 
 ## 10. Assumptions and limitations
 

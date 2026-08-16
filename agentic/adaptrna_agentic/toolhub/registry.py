@@ -185,8 +185,10 @@ class Registry:
         The wrapped package must already be importable — the CLI owns the approval-gated
         install; this method only refuses with the exact command when it is missing.
         """
+        from adaptrna_agentic.codegen.discovery import ensure_importable
         from adaptrna_agentic.toolhub.external import contract
 
+        ensure_importable()
         spec, _module = contract.load_spec(module_path)
 
         if not contract.is_available(spec.package):

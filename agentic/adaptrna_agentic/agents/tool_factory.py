@@ -314,17 +314,44 @@ def _codegen_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseTool
         written = staging.land(stage)
         _STAGES.pop(stage_id, None)
 
-        return {
+        result: dict = {
             "landed": written,
             "name": stage.name,
             "kind": stage.kind,
             "module": stage.module_path,
-            "next": (
-                "The task is registered on next use — recommend_training_config can now "
-                "target it." if stage.kind == "task"
-                else "Register its functions as tools with the external-tool flow."
-            ),
         }
+
+        if stage.kind == "tool":
+            from adaptrna_agentic.codegen import discovery
+            import importlib
+            import sys
+
+            discovery.ensure_importable()
+
+            # The verification pipeline imported the module from the staging
+            # directory; evict those cached copies so the just-landed file is
+            # picked up instead.
+            for key in list(sys.modules):
+                if key == stage.module_path or key in (
+                    "adaptrna_custom", "adaptrna_custom.tools"
+                ):
+                    del sys.modules[key]
+            importlib.invalidate_caches()
+
+            entries = registry.register_external(stage.module_path)
+            names = [e.name for e in entries]
+            result["registered"] = names
+            result["next"] = (
+                f"Registered {len(names)} tool(s): {', '.join(names)} — "
+                f"active and usable now."
+            )
+        else:
+            result["next"] = (
+                "The task is registered on next use — recommend_training_config can now "
+                "target it."
+            )
+
+        return result
 
     return [
         StructuredTool.from_function(func=_surface_errors(func), handle_tool_error=True)
@@ -411,6 +438,9 @@ def _external_tool(entry, registry: Registry) -> BaseTool:
 
 def build_agent_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseTool]:
     """Every management operation plus every registered tool, as LangChain tools."""
+    from adaptrna_agentic.codegen.discovery import ensure_importable
+
+    ensure_importable()
     tools = _management_tools(registry, runtime)
 
     for entry in registry.list():

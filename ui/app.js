@@ -10,6 +10,84 @@
 import { api, resumeSession, sendMessage, token } from "./api.js";
 import * as ui from "./render.js";
 
+// ------------------------------------------------------------------ monaco
+// One editor instance lives for the lifetime of a single approval dialog.
+// It is created in showApproval and disposed in _closeApprovalEditor.
+let _monacoEditor = null;
+let _monacoModels = [];
+
+function _langFromPath(path) {
+  if (path.endsWith(".py")) return "python";
+  if (path.endsWith(".yaml") || path.endsWith(".yml")) return "yaml";
+  return "plaintext";
+}
+
+function _closeApprovalEditor() {
+  for (const m of _monacoModels) m.dispose();
+  _monacoModels = [];
+  if (_monacoEditor) { _monacoEditor.dispose(); _monacoEditor = null; }
+}
+
+function _initMonacoEditor(mount, files) {
+  _closeApprovalEditor();
+
+  const theme = matchMedia("(prefers-color-scheme: dark)").matches ? "vs-dark" : "vs";
+
+  // Lazy-load Monaco via the AMD loader injected in index.html.
+  require(["vs/editor/editor.main"], function (monaco) {
+    if (!mount.isConnected) return; // modal closed before Monaco loaded
+
+    const models = files.map((f) =>
+      monaco.editor.createModel(f.content, _langFromPath(f.path))
+    );
+    _monacoModels = models;
+
+    const editor = monaco.editor.create(mount, {
+      model: models[0],
+      readOnly: true,
+      theme,
+      automaticLayout: false,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      fontSize: 13,
+      lineNumbers: "on",
+      wordWrap: "off",
+    });
+    _monacoEditor = editor;
+
+    // Wire the tab bar that render.js built alongside the mount.
+    const panel = mount.parentElement;
+    if (panel) {
+      panel.addEventListener("click", (e) => {
+        const btn = e.target.closest(".approval-tab");
+        if (!btn) return;
+        const idx = Number(btn.dataset.index);
+        if (!Number.isFinite(idx) || !models[idx]) return;
+        panel.querySelectorAll(".approval-tab").forEach((b) =>
+          b.classList.toggle("approval-tab-active", b === btn)
+        );
+        editor.setModel(models[idx]);
+      });
+    }
+
+    // layout() is required when the container was hidden during create().
+    editor.layout();
+  });
+
+  // Fallback: if require is not available (Monaco failed to load), show plain text.
+  if (typeof require === "undefined") {
+    _monacoFallback(mount, files[0]);
+  }
+}
+
+function _monacoFallback(mount, file) {
+  if (!file) return;
+  mount.className = "approval-code-editor approval-code-editor-fallback";
+  const pre = document.createElement("pre");
+  pre.textContent = file.content;
+  mount.appendChild(pre);
+}
+
 const $ = (id) => document.getElementById(id);
 
 const JOB_POLL_MS = 3000;
@@ -191,9 +269,16 @@ function showApproval(request) {
   $("approval-note").value = "";
   $("approval").hidden = false;
   $("approval-approve").focus();
+
+  const mount = $("approval-body").querySelector(".approval-code-editor");
+  if (mount) {
+    const files = ui.editorMountFiles(mount);
+    if (files && files.length > 0) _initMonacoEditor(mount, files);
+  }
 }
 
 async function decide(approved) {
+  _closeApprovalEditor();
   const note = $("approval-note").value.trim();
   $("approval").hidden = true;
   state.pending = null;

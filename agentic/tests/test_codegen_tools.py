@@ -2,6 +2,7 @@
 
 import shutil
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ from adaptrna_agentic.agents.tool_factory import GATED_TOOLS, build_agent_tools,
 from adaptrna_agentic.codegen import staging
 from adaptrna_agentic.codegen.discovery import (
     CUSTOM_ROOT,
+    TOOLS_DIRNAME,
     custom_task_names,
     describe_failures,
     load_all,
@@ -16,6 +18,31 @@ from adaptrna_agentic.codegen.discovery import (
 )
 from adaptrna_agentic.toolhub.runtime import AdapterRuntime
 from fixtures import broken_task_sources as sources
+
+# Minimal contract-compliant wrapper whose "package" is the stdlib json module.
+# Uses a unique family name per test run to avoid name collisions across tests.
+_WRAPPER_TEMPLATE = """\
+from adaptrna_agentic.toolhub.external.contract import (
+    ExternalToolSpec, FunctionSpec, GoldenCase, PackageSpec,
+)
+
+def ping(message: str) -> dict:
+    import json
+    return {{"echo": json.dumps(message)}}
+
+SPEC = ExternalToolSpec(
+    name="{family}",
+    description="Test-only wrapper.",
+    package=PackageSpec(pip="dummy-pkg", import_name="json"),
+    functions=(
+        FunctionSpec(
+            name="ping",
+            description="Echo a message.",
+            golden=(GoldenCase(args={{"message": "hi"}}, expect={{"echo": '"hi"'}}),),
+        ),
+    ),
+)
+"""
 
 
 @pytest.fixture
@@ -138,7 +165,12 @@ def test_approval_payload_shows_the_files_and_the_staging_path(tmp_path):
         assert name in summary and "task.py" in summary
         assert {f["path"] for f in details["files"]} == set(stage.files)
         assert details["staging_path"] == str(stage.package_dir)
-        assert "x = 1" in details["diff"]           # the human can read the code itself
+        # Each file entry now carries the source so the browser can show it inline.
+        file_by_path = {f["path"]: f for f in details["files"]}
+        py_key = next(k for k in file_by_path if k.endswith("task.py"))
+        assert file_by_path[py_key]["content"] == "x = 1\n"
+        assert "lines" in file_by_path[py_key]
+        assert "diff" not in details           # diff string removed; content is per-file
     finally:
         _STAGES.pop(stage.id, None)
 
@@ -169,3 +201,72 @@ def test_landing_makes_a_staged_task_available(tmp_path, tools):
     finally:
         _STAGES.pop(stage.id, None)
         shutil.rmtree(CUSTOM_ROOT / "tasks" / name, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- external-tool land + register
+
+def test_landing_an_external_tool_registers_it_automatically(tmp_path, nano_registry):
+    """land_generated_code for a kind='tool' stage must write the file AND call
+    register_external, leaving active manifest entries — no separate CLI step required."""
+    from adaptrna_agentic.agents.tool_factory import _STAGES
+
+    family = f"gen_{uuid.uuid4().hex[:6]}"
+    content = _WRAPPER_TEMPLATE.format(family=family)
+    stage = staging.stage_tool(family, content, data_dir=tmp_path / "hub")
+    _STAGES[stage.id] = stage
+
+    tools_map = {t.name: t for t in build_agent_tools(nano_registry, AdapterRuntime(nano_registry))}
+
+    try:
+        result = tools_map["land_generated_code"].invoke({"stage_id": stage.id})
+
+        # The tool result must name the registered entries.
+        assert "registered" in result
+        assert f"{family}_ping" in result["registered"]
+
+        # The manifest must have the entry.
+        entry = nano_registry.get(f"{family}_ping")
+        assert entry.type == "external"
+        assert entry.active
+        assert entry.external["module"] == stage.module_path
+
+        # The file must be on disk.
+        landed = CUSTOM_ROOT / TOOLS_DIRNAME / f"{family}.py"
+        assert landed.exists()
+
+        assert stage.id not in _STAGES            # consumed
+    finally:
+        _STAGES.pop(stage.id, None)
+        landed = CUSTOM_ROOT / TOOLS_DIRNAME / f"{family}.py"
+        landed.unlink(missing_ok=True)
+        # Remove the manifest entry if it was registered.
+        if f"{family}_ping" in nano_registry.manifest.tools:
+            nano_registry.remove(f"{family}_ping")
+
+
+def test_landing_an_external_tool_reports_package_not_installed(tmp_path, nano_registry, monkeypatch):
+    """If the wrapped package is absent, land_generated_code surfaces the install hint
+    (not a silent success or a crash)."""
+    import sys
+    from adaptrna_agentic.agents.tool_factory import _STAGES
+    from adaptrna_agentic.toolhub.external import contract as ext_contract
+
+    family = f"gen_{uuid.uuid4().hex[:6]}"
+    content = _WRAPPER_TEMPLATE.format(family=family)
+    stage = staging.stage_tool(family, content, data_dir=tmp_path / "hub")
+    _STAGES[stage.id] = stage
+
+    # Pretend the package is not importable.
+    monkeypatch.setattr(ext_contract, "is_available", lambda _pkg: False)
+
+    tools_map = {t.name: t for t in build_agent_tools(nano_registry, AdapterRuntime(nano_registry))}
+
+    try:
+        result = tools_map["land_generated_code"].invoke({"stage_id": stage.id})
+
+        # ToolException is returned as a string by handle_tool_error=True.
+        assert isinstance(result, str)
+        assert "pip install" in result.lower() or "not installed" in result.lower()
+    finally:
+        _STAGES.pop(stage.id, None)
+        (CUSTOM_ROOT / TOOLS_DIRNAME / f"{family}.py").unlink(missing_ok=True)

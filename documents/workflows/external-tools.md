@@ -216,13 +216,31 @@ Verification differs from the task flow, deliberately:
   the code. (This is the opposite of the task flow, where a skipped required check is a
   failure, because there the missing thing is *your data*.)
 
-Same bounded loop (≤ 3 attempts), same staging, same approval gate. Landed wrappers go to
-`adaptrna_custom/tools/<name>.py`, and the tool result reminds you of the next step:
+Same bounded loop (≤ 3 attempts), same staging, same **approval gate**. The approval window
+displays the generated code in a read-only Monaco editor — with a tab per file if multiple
+files are involved — so you can review it inline before approving.
 
-> *"Register its functions as tools with the external-tool flow."*
+When you approve `land_generated_code`, two things happen atomically:
+
+1. The wrapper is written to `adaptrna_custom/tools/<name>.py`.
+2. `Registry.register_external` is called immediately — the tools are **active and usable at
+   once**, with no manual follow-up step.
+
+```
+approve → write adaptrna_custom/tools/vienna.py
+        → register vienna_fold, vienna_cofold
+        → both tools are live
+```
+
+**Caveat:** the wrapped package must be installed before approval. If it is not, the
+registration step surfaces the exact `pip install` command as the tool result (the same
+message as the CLI's refusal). Install the package and land again.
+
+If you prefer to manage registration manually (or need to re-register after modifying a landed
+wrapper), the CLI remains available:
 
 ```bash
-$toolhub register-external adaptrna_custom.tools.<name>
+python -m adaptrna_agentic.cli.toolhub register-external adaptrna_custom.tools.<name>
 ```
 
 ## 7. Where the pieces live

@@ -351,6 +351,9 @@ export function analysisReport(report) {
  * dialog is that the human sees what will actually run; a summary here would quietly
  * undo the gates built in Phases 5–8.
  */
+// WeakMap so file data survives without polluting DOM attributes with large strings.
+const _editorFiles = new WeakMap();
+
 export function approvalBody(request) {
   const items = (request.requests || []).map((item) => {
     const details = item.details || {};
@@ -369,14 +372,34 @@ export function approvalBody(request) {
     if (details.output_dir) rows.push(line("output", details.output_dir));
     if (details.downloads) rows.push(line("note", details.downloads));
 
-    for (const file of details.files || []) {
-      rows.push(line("write", `${file.path}  (${file.lines} lines)`));
+    const files = details.files || [];
+    const hasContent = files.length > 0 && files[0].content != null;
+
+    if (hasContent) {
+      // Show a tabbed code viewer instead of plain "write …" lines.
+      const editorMount = el("div", { class: "approval-code-editor" });
+      _editorFiles.set(editorMount, files);
+
+      const tabBar = el("div", { class: "approval-tabs" },
+        ...files.map((f, i) => {
+          const name = f.path.split("/").pop();
+          return el("button", {
+            class: "approval-tab" + (i === 0 ? " approval-tab-active" : ""),
+            type: "button",
+            "data-index": String(i),
+          }, name);
+        })
+      );
+
+      rows.push(el("div", { class: "approval-code-panel" }, tabBar, editorMount));
+    } else {
+      for (const file of files) {
+        rows.push(line("write", `${file.path}  (${file.lines} lines)`));
+      }
     }
 
     if (details.staging_path) {
       rows.push(line("staged in", details.staging_path));
-      rows.push(el("div", { class: "approval-hint",
-                            text: "open it in your editor to read the code before approving" }));
     }
 
     for (const warning of details.warnings || []) {
@@ -391,4 +414,9 @@ export function approvalBody(request) {
   });
 
   return el("div", { class: "approval-items" }, items);
+}
+
+/** Retrieve the file list stashed on an editor mount element. */
+export function editorMountFiles(mount) {
+  return _editorFiles.get(mount) || null;
 }
