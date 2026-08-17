@@ -96,6 +96,26 @@ def test_a_turn_carries_the_fields_the_client_reads(client):
     assert "answer" in _by_name(events, "done")[0]
 
 
+def test_a_tool_result_is_not_also_streamed_as_text(client):
+    """A ToolMessage must reach the client exactly once, as `tool_result`.
+
+    Regression for a bug where the graph's `messages` stream mode re-emitted the same
+    ToolMessage as a `text` delta, so the tool's raw output was rendered twice: once as a
+    plain assistant bubble, once as the proper tool-result row. The duplicate only showed
+    up live — a refresh (which rebuilds from the checkpointer) never had it — so this has
+    to be caught here rather than in a `history()` test.
+    """
+    test_client, _ = client
+
+    events = _events(test_client)
+
+    results = _by_name(events, "tool_result")
+    assert len(results) == 1
+
+    streamed_text = "".join(data["delta"] for data in _by_name(events, "text"))
+    assert results[0]["content"] not in streamed_text
+
+
 def test_an_error_frame_carries_a_message(nano_registry, tmp_path):
     """The client renders `data.message`; a bare error would show as an empty bubble."""
     from adaptrna_agentic.api.events import stream_turn

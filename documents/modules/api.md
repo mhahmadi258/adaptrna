@@ -136,8 +136,11 @@ history(graph, config) -> [{role, content, name?, tool_calls?}]
 ```
 
 `stream_turn` consumes `graph.stream(payload, config, stream_mode=["updates", "messages"])`:
-`messages` chunks become `text` frames (token by token), `updates` chunks become `tool_call`
-and `tool_result` frames.
+`messages` chunks become `text` frames (token by token) — but only for `AIMessage` chunks;
+`updates` chunks become `tool_call` and `tool_result` frames. The `messages` stream also
+carries tool (and human) messages, so the `AIMessage` filter matters: without it, a
+`ToolMessage` would be emitted both as a `text` delta and as a `tool_result` frame,
+rendering the same tool output twice.
 
 | Event | Payload | Meaning |
 |---|---|---|

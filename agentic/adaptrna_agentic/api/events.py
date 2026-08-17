@@ -46,9 +46,14 @@ def stream_turn(graph, config, payload) -> Iterator[str]:
         ):
             if mode == "messages":
                 message, _meta = chunk
-                text = _text_of(message)
-                if text:
-                    yield sse("text", {"delta": text})
+                # Only assistant tokens become `text` frames. The `messages` stream also
+                # carries tool (and human) messages; a ToolMessage here would otherwise be
+                # emitted as plain text *and* as a `tool_result` frame (from `updates`),
+                # rendering the same result twice.
+                if isinstance(message, AIMessage):
+                    text = _text_of(message)
+                    if text:
+                        yield sse("text", {"delta": text})
             elif mode == "updates":
                 yield from _update_events(chunk)
 

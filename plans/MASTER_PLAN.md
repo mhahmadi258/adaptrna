@@ -316,6 +316,7 @@ done is demonstrated, not when its code exists.
 | 10 | Session rail + user-owned tool state | Tool activation moves behind the approval gate; the thinking indicator tells the truth; sessions get a resizable, collapsible rail with create / rename / delete, and the API a matching session-management surface | A disabled tool cannot be re-enabled without the user's approval in either front end; the indicator is dark at rest; sessions are managed from the rail | ✅ done 2026-08-13 — 405 agentic tests green (from 381) + 15 opt-in browser tests; live: `vienna_fold` disabled → the assistant **reported it and stopped** rather than calling `activate_tool` at all → asked to proceed, the gate suspended with `tools.json` still `"disabled"` at the interrupt → **declined, and it stayed disabled** → approved, flipped, folded `GGGGAAAACCCC` to `((((....))))` @ −5.4; terminal prompt field-identical to the modal; rail created/renamed/deleted/filtered/resized with zero JS errors; sessions crossed browser↔terminal both ways |
 | 11 | Activity bar + job log | A static icon bar switches the left rail between Sessions and Jobs; selecting a run replaces the chat column with its live log; the right-hand Jobs panel is removed | Both views switch from the icon bar, a running job's log tails in the middle column, and the composer is gone while it is open | ✅ done 2026-08-14 — 408 agentic tests green (from 405) + 21 opt-in browser tests (from 15); live against the real install: 6 runs listed in the rail, `splice_simple_lora_20260813_101810` opened to its real `train.log` with `test/f1_score 0.968599` in the header, chat and composer correctly gone, zero JS errors; layout verified at 1440 px and 400 px with no horizontal overflow, and the rail-grip offset bug the activity bar exposed fixed and guarded |
 | 12 | External-tool registration + approval code editor | Two fixes: (1) `land_generated_code` for a `kind="tool"` stage now calls `register_external` automatically — evicting stale staging-path `sys.modules` entries first — so an external wrapper is active immediately after approval with no separate CLI step; (2) the approval window embeds a read-only Monaco editor (vendored at `ui/vendor/monaco/vs/`, offline-safe) with browser-style tabs when multiple files are present | Approving `land_generated_code` for a generated external wrapper produces an active manifest entry; the approval modal shows the source in a tabbed Monaco editor; `test_ui_serving.py` still asserts no external host is fetched | ✅ done 2026-08-16 — 31 tests in the affected suites green (codegen, UI serving, external registry, approval gate, tool factory, orchestrator); 2 new external-tool land→register tests; 2 new serving tests asserting the vendored Monaco loader resolves locally; docs updated (external-tools.md §6, toolhub.md, codegen.md, web-ui.md) |
+| 13 | Duplicate tool-response fix | Bug fix, plan in `plans/FIX_DUPLICATE_TOOL_RESPONSE.md`: `stream_turn` (`api/events.py`) consumes the graph with `stream_mode=["updates", "messages"]`; the `messages` branch turned *every* message — including `ToolMessage`s already emitted as `tool_result` by the `updates` branch — into a `text` frame, so a tool's output was rendered twice live (a plain bubble, then the proper result row). Fixed by gating the `messages` branch on `isinstance(message, AIMessage)` | A tool call's output streams as exactly one `tool_result` frame, never also as `text` | ✅ done 2026-08-17 — 413 agentic tests green (from 412); new regression test `test_a_tool_result_is_not_also_streamed_as_text` pins one `tool_result` per call and asserts its content never appears in the concatenated `text` stream; docs updated (api.md §4) |
 
 **Dependencies:** 0 → 1 → 2 → 3 → 4 → 5 → 6, in order. Phase 7 runs continuously from
 Phase 4 onward. Phase 8 can start after 4 (it is genuinely useful after 5). Phase 9 needs 8.
@@ -366,13 +367,14 @@ Tracked here; each is decided in the detailed plan of the phase that first needs
 3. If a phase reveals that a principle in §3 or a constraint in §7 is wrong, change this
    document first, then the code.
 
-**Status (2026-08-16):** all thirteen phases (0–12) are landed and every §10 decision is
+**Status (2026-08-17):** all fourteen phases (0–13) are landed and every §10 decision is
 resolved. The roadmap in this document is complete: engine untouched at 135 tests, the
-agent platform at 408+ deterministic tests plus 21 opt-in browser tests, and the same
+agent platform at 413+ deterministic tests plus 21 opt-in browser tests, and the same
 system reachable from a terminal REPL, an HTTP API and a browser — sharing one
 checkpointer, one backbone and one set of approval gates. External (non-adapter) tools are
 now fully registerable through the agent flow, and the approval window embeds an inline
-code editor for reviewing generated code before approving.
+code editor for reviewing generated code before approving. Phase 13 closed a live-stream-only
+bug where a tool's result was rendered twice.
 
 **Where to take it next**, in rough order of value:
 
