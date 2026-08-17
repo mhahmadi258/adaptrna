@@ -90,6 +90,7 @@ not your shell history, is the record of what was trained.
 | `optim.*` | `name` adam, `lr` 1e-4, `weight_decay` null, `scheduler.{name,interval,…}` | Unknown scheduler keys are **rejected**, not ignored |
 | `trainer.*` | `accelerator`/`devices` auto, `max_epochs`/`max_steps` -1, `precision` bf16-mixed, `gradient_clip_val` null, `log_every_n_steps` 50, `progress_refresh_rate` 50, `checkpoint_every_epoch` false | |
 | `finetune.*` | `schedule` null, `initial_denom_lr` 1.0 | Full FT only; mutually exclusive with `--use_lora` (the CLI refuses the combination) |
+| `cost.*` | `enabled` true, `warmup_steps` 10, `log_per_step` true, `sync_cuda` true | Drives the `CostProfiler` callback ([`rinalmo_hub/cost.py`](../engine/rinalmo_hub/cost.py)); a **top-level** block, not nested under `trainer:` — `build_trainer()` splats unrecognised `trainer.*` keys straight into `pl.Trainer(**kwargs)` |
 
 `initial_denom_lr: 1.0` is a deliberate departure from Lightning's default of `10.0`, which
 silently trains newly unfrozen parameters an order of magnitude below the configured rate.
@@ -313,6 +314,7 @@ outputs/<run_name>/
 ├── metrics/version_N/
 │   ├── metrics.csv                appended as the run goes — `tail -f` it
 │   └── hparams.yaml
+├── run_summary.json               final task metrics + per-stage cost (below), written last
 ├── train.log                      stdout+stderr of the detached process
 ├── exit_code                      written by train_entrypoint in a `finally` block
 └── <task>_adapter.pt              LoRA runs (or <task>_full.pt with --save_full_weights)
@@ -325,6 +327,14 @@ and a literal `"nan"` as NaN, divergence detection re-reads the file as text
 (`analysis._nonfinite_loss_columns`) to tell "diverged" apart from "not logged here".
 
 `latest_metrics_file()` picks the highest `version_N` that actually contains a `metrics.csv`.
+
+When `cost.enabled` is on (the default), `metrics.csv` also carries `cost/<stage>/iter_time_ms`
+and `cost/<stage>/mem_allocated_gb` columns at the usual `trainer.log_every_n_steps` cadence —
+sparse like every other column. `analysis._final_metrics` filters the `cost/` prefix out before
+comparing a run's metrics to a reference (it is training instrumentation, not a task metric),
+but `runner.read_progress` surfaces it unfiltered for the live job-status panel. The
+full-fidelity numbers — mean, median, p90 iteration time and mean/peak GPU memory, per stage —
+live in `run_summary.json`, not in the (possibly downsampled) CSV.
 
 ## 10. Format versions and compatibility
 

@@ -147,6 +147,20 @@ def test_task_without_a_reference_band_says_so(tmp_path):
     assert any("baseline" in check for check in report["checks"])
 
 
+def test_cost_columns_are_excluded_from_reported_metrics(tmp_path):
+    """`cost/*` (rinalmo_hub/cost.py) is training instrumentation, not a task metric."""
+    directory = write_metrics(
+        tmp_path,
+        ["0,50,0.42,,120.5", "1,100,0.11,,110.2", "1,101,,96.5,"],
+        header="epoch,step,train/loss,test/f1_score,cost/train/iter_time_ms",
+    )
+
+    report = analyze_run(directory, task="splice_site")
+
+    assert "cost/train/iter_time_ms" not in report["metrics"]
+    assert report["primary_value"] == pytest.approx(96.5)
+
+
 def test_plan_supplies_task_and_arm(tmp_path):
     plan = {"task": "splice_site", "arm": "lora", "overrides": {}}
 

@@ -73,6 +73,7 @@ rinalmo_hub/            the framework
 ├── adapter.py          the adapter file format: save / load / inspect
 ├── config.py           base.yaml -> task YAML -> --set overrides
 ├── hub.py              RiNALMoHub: multi-adapter inference
+├── cost.py             CostProfiler: per-stage iteration time and GPU memory
 ├── tasks/              one module per task, each registered
 ├── data/               datamodules this project adds
 └── cli/                train.py, evaluate.py, predict.py
@@ -95,6 +96,7 @@ tests/                  CPU test suite plus opt-in suites needing weights or dat
 | `rinalmo_hub/lora.py` | Where LoRA is injected into the backbone, what stays frozen, and how several adapters coexist in one backbone. |
 | `rinalmo_hub/adapter.py` | The adapter file: a versioned dict holding the task name, backbone size, LoRA geometry, head config, tensors, non-tensor extras and run metadata. |
 | `rinalmo_hub/hub.py` | `RiNALMoHub` — register adapters, list them, switch, predict, embed. |
+| `rinalmo_hub/cost.py` | `CostProfiler` — per-stage (train/val/test) mean/peak GPU memory and mean iteration time, written to `run_summary.json` alongside the final task metrics. |
 | `rinalmo_hub/cli/common.py` | Shared CLI plumbing, including the load-bearing construction order: build module → load backbone → inject LoRA → load adapter. |
 
 Naming is fixed across the whole framework: the backbone is always `self.backbone`, the head
@@ -174,13 +176,39 @@ tested is the one at the end of training, so validation metrics inform you but d
 |---|---|
 | `<output_dir>/resolved_config.yaml` | the exact, fully merged config the run used |
 | `<output_dir>/metrics/version_N/metrics.csv` | every logged metric, written as the run goes — `tail -f` it |
+| `<output_dir>/run_summary.json` | final task metrics plus per-stage training cost (see below) |
 | `<output_dir>/<task>_adapter.pt` | the LoRA artifact (LoRA runs) |
 | `<output_dir>/<task>_full.pt` | the full state dict (full-FT runs, with `--save_full_weights`) |
-| stdout | Lightning's test table at the end of the run |
+| stdout | Lightning's test table, then the same summary that lands in `run_summary.json` |
 
-A `CSVLogger`, a `TQDMProgressBar` and a `LearningRateMonitor` are attached to every run.
-tqdm rather than Lightning's default rich bar, because the rich bar buffers when stdout is not
-a TTY and a redirected log stays empty for the whole run.
+A `CSVLogger`, a `TQDMProgressBar`, a `LearningRateMonitor` and a `CostProfiler` are attached
+to every run. tqdm rather than Lightning's default rich bar, because the rich bar buffers when
+stdout is not a TTY and a redirected log stays empty for the whole run.
+
+`run_summary.json` exists for paper-table experiments, where the quality metric alone is not
+the whole story:
+
+```json
+{
+  "task": "mrl", "arm": "lora", "seed": 42, "git_sha": "a1b2c3d",
+  "final_metrics": { "test/r2": 0.81 },
+  "cost": {
+    "device": "NVIDIA A100-SXM4-40GB", "world_size": 1, "warmup_steps": 10,
+    "train": {
+      "batches": 5000, "measured_batches": 4990,
+      "iter_time_ms_mean": 412.7, "iter_time_ms_median": 410.2, "iter_time_ms_p90": 428.9,
+      "wall_seconds": 2110.4, "wall_ms_per_batch": 422.1,
+      "mem_allocated_gb_mean": 18.3, "mem_allocated_gb_peak": 21.7
+    },
+    "val": { "...": "same shape" },
+    "test": { "...": "same shape" }
+  }
+}
+```
+
+A stage with zero measured batches (a `max_steps` run cut off before the first validation
+pass, say) is simply absent from `cost`, rather than present with null figures. See
+`cost.*` below for the knobs, and `rinalmo_hub/cost.py` for how the numbers are measured.
 
 Per-epoch checkpointing is off by default (`trainer.checkpoint_every_epoch`), since a full-FT
 checkpoint is the size of the backbone times a few. Turn it on deliberately if you need it.
@@ -329,6 +357,19 @@ is the usual alternative to simply lowering the full-FT learning rate.
 
 `data.batch_size`, `data.num_workers`, `data.pin_memory` and `data.prepare` are universal.
 `data.root` and everything else under `data.*` is task-defined; see §5.
+
+#### Training cost (`cost.*`)
+
+| key | default | meaning |
+|---|---|---|
+| `cost.enabled` | `true` | Attaches a `CostProfiler` callback that tracks iteration time and GPU memory per stage (train/val/test) and writes `run_summary.json`. Set `false` to skip it entirely. |
+| `cost.warmup_steps` | `10` | Batches excluded from the *mean* timing and memory figures at the start of each stage — cuDNN autotuning, allocator growth and lazy CUDA init otherwise skew a short run badly. Peak memory still covers the whole stage, warm-up included. |
+| `cost.log_per_step` | `true` | Also emit `cost/<stage>/iter_time_ms` and `cost/<stage>/mem_allocated_gb` into `metrics.csv`, at the same `trainer.log_every_n_steps` cadence as everything else. |
+| `cost.sync_cuda` | `true` | Calls `torch.cuda.synchronize()` before each timing stamp. CUDA kernels are asynchronous, so without this the numbers measure kernel *enqueue*, not completion. Turning it off trades accuracy for a small speedup. |
+
+This must live under top-level `cost:`, not `trainer:` — `build_trainer()` splats unrecognised
+`trainer.*` keys straight into `pl.Trainer(**kwargs)`, so an unknown key there is a hard
+`TypeError` from Lightning.
 
 ### A note on reproducibility
 

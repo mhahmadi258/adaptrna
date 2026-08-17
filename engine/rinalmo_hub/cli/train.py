@@ -21,6 +21,7 @@ from rinalmo_hub.cli.common import (
     prepare_run,
     resolve_run_config,
 )
+from rinalmo_hub.cost import build_cost_profiler, write_run_summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,7 +91,8 @@ def main(argv=None) -> int:
 
     module = build_module(cfg, task, args)
     datamodule = type(module).build_datamodule(cfg)
-    trainer = build_trainer(cfg, args.output_dir)
+    profiler = build_cost_profiler(cfg)
+    trainer = build_trainer(cfg, args.output_dir, extra_callbacks=[profiler] if profiler else None)
 
     if not args.test_only:
         trainer.fit(model=module, datamodule=datamodule)
@@ -100,6 +102,9 @@ def main(argv=None) -> int:
 
     if not args.no_test:
         trainer.test(model=module, datamodule=datamodule)
+
+    if args.output_dir and trainer.is_global_zero:
+        write_run_summary(args.output_dir, cfg=cfg, task=task, trainer=trainer, profiler=profiler)
 
     return 0
 

@@ -48,3 +48,9 @@ finetune:
   schedule: null              # path to a ft_schedules/*.yaml, full FT only
   initial_denom_lr: 1.0       # Lightning's own default of 10.0 silently trains the
                               # backbone an order of magnitude below the configured lr
+
+cost:
+  enabled: true
+  warmup_steps: 10            # first iterations pay cuDNN autotuning and allocator growth
+  log_per_step: true          # emit cost/* columns into metrics.csv
+  sync_cuda: true             # torch.cuda.synchronize() before each stamp; off = faster, wrong

@@ -38,6 +38,7 @@ task-authoring walkthrough — it is not duplicated here.
 | `adapter.py` | 183 | The adapter file format v2: save / load / describe |
 | `config.py` | 139 | Three-layer config resolution and the `Config` object |
 | `hub.py` | 206 | `RiNALMoHub`: N adapters in one backbone |
+| `cost.py` | ~215 | `CostProfiler`: per-stage GPU memory + iteration time, `run_summary.json` |
 | `cli/common.py` | 217 | The construction order, trainer assembly, config→CLI wiring |
 | `cli/{train,evaluate,predict}.py` | 108/68/107 | The three entry points |
 | `tasks/*.py` | 103/146/193 | splice_site · mrl · sec_struct |
@@ -333,6 +334,35 @@ if args.init_params: module.load_state_dict(...)       # (full-FT export)
 `--save_full_weights` (~2.6 GB), because *a full-FT run's adapter file would carry only the
 head, and the backbone it was trained with would not travel with it*. Asking for
 `--adapter_out` on a full-FT run does produce the file, with a printed warning.
+
+After `test` (or `test_only`), `write_run_summary` (rank zero only) writes
+`<output_dir>/run_summary.json`: final task metrics plus, when `cost.enabled`, per-stage
+(train/val/test) mean/median/p90 iteration time and mean/peak GPU memory from `cost.py`'s
+`CostProfiler`, built by `build_cost_profiler(cfg)` and threaded through `build_trainer`'s
+existing `extra_callbacks` parameter — no change to shared trainer plumbing was needed.
+
+### `cost.py` — `CostProfiler`
+
+A `pl.Callback` timing every `training_step`/`validation_step`/`test_step` and sampling
+`torch.cuda.memory_allocated` alongside it, kept in a per-stage accumulator.
+
+Two decisions worth knowing if you touch this file:
+
+* **Timing is pair-based** — `on_*_batch_start` to `on_*_batch_end` of the *same* batch —
+  rather than the delta between consecutive `batch_end` calls. Lightning interleaves the
+  validation loop inside the training epoch loop, so a delta measurement would record the
+  first train batch after every validation pass as one enormous iteration. Pairing each
+  batch's own start and end keeps train/val/test independent regardless of what the other
+  stages are doing.
+* **Per-step logging never sets `sync_dist=True`**, unlike every `self.log()` call in
+  `module.py`. `sync_dist` inserts an all-reduce per logged value per step, which would
+  directly inflate the very iteration time being measured.
+
+The first `cost.warmup_steps` batches of each stage are excluded from the *mean* timing and
+memory figures (cuDNN autotuning, allocator growth, lazy CUDA init), but always count toward
+the peak-memory figure. `cost.sync_cuda` (default on) calls `torch.cuda.synchronize()` before
+each timing stamp — CUDA kernels are asynchronous, so without it the numbers measure kernel
+*enqueue*, not completion.
 
 ### `evaluate.py`
 

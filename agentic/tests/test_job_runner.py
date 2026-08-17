@@ -188,6 +188,19 @@ def test_read_progress_without_metrics_is_none(tmp_path):
     assert read_progress(tmp_path)["progress"] is None
 
 
+def test_read_progress_surfaces_cost_columns_unfiltered(tmp_path):
+    """Unlike `analysis._final_metrics`, the live job panel shows `cost/*` as-is."""
+    metrics = tmp_path / "metrics" / "version_0"
+    metrics.mkdir(parents=True)
+    (metrics / "metrics.csv").write_text(
+        "epoch,step,train/loss,cost/train/iter_time_ms\n"
+        "0,10,0.5,412.3\n"
+    )
+
+    progress = read_progress(tmp_path)["progress"]
+    assert progress["latest_metrics"]["cost/train/iter_time_ms"] == pytest.approx(412.3)
+
+
 def test_unknown_job_lists_known_ids(runner, tmp_path):
     runner.start(plan(tmp_path))
 

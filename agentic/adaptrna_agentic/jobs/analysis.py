@@ -244,10 +244,16 @@ def previous_best(
 # ---------------------------------------------------------------------- helpers
 
 def _final_metrics(frame) -> Dict[str, float]:
-    """The last logged value of every metric column (rows are sparse by design)."""
+    """The last logged value of every task-metric column (rows are sparse by design).
+
+    `cost/*` columns are the engine's per-step iteration-time/GPU-memory instrumentation
+    (see `rinalmo_hub/cost.py`), not a task metric -- they are excluded so a run's quality
+    numbers don't quietly acquire two timing columns. `read_progress` in `runner.py`
+    surfaces them unfiltered instead, for the live job-status panel.
+    """
     metrics = {}
     for column in frame.columns:
-        if column in ("epoch", "step"):
+        if column in ("epoch", "step") or column.startswith("cost/"):
             continue
         series = frame[column].dropna()
         if not series.empty:

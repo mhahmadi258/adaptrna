@@ -142,6 +142,7 @@ SSE collection helpers, so HTTP tests can assert on frame sequences.
 | `test_hub.py` | Three adapters resident in one hub, each task's output **bit-identical** to that task loaded alone; and that adapters with different geometries coexist — the assumption the whole hub design rests on |
 | `test_config_and_cli.py` | Config resolution and CLI wiring. The `--set optim.lr=3e-4` case is the one to stare at: YAML 1.1 parses it as a *string* |
 | `test_training_loop.py` | End-to-end `trainer.fit` on CPU with synthetic data: the generic steps, metric aggregation, the MRL scaler fit, checkpoint slimming, gradual unfreezing, `initial_denom_lr` |
+| `test_cost.py` | `CostProfiler` on CPU with synthetic data: warm-up exclusion, Lightning's sanity-check batches never leaking into the val accumulator, `null` (not a crash) when a stage has zero measured batches, `run_summary.json` round-trips |
 | `test_new_task_acceptance.py` | **The acceptance test for the abstraction**: a fourth task is added by three files under `examples/`, no core file is edited, and a check asserts that no core file so much as *mentions* the task name |
 | `test_user_run.py` | The seven opt-in tests (GPU / weights / data), including the regression test |
 

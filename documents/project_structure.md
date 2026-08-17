@@ -51,6 +51,7 @@ engine/
 │   ├── adapter.py            [entry] adapter file format v2; `python -m rinalmo_hub.adapter <f>`
 │   ├── config.py                    base.yaml → task yaml → --set layering; Config object
 │   ├── hub.py                       RiNALMoHub: N adapters resident in one backbone
+│   ├── cost.py                      CostProfiler: per-stage GPU memory + iteration time
 │   ├── tasks/                       one module per shipped task
 │   │   ├── __init__.py              imports all three so @register_task fires
 │   │   ├── splice_site.py           binary classification on the CLS token
@@ -111,6 +112,7 @@ engine/
 | `rinalmo_hub/lora.py` | Where LoRA is injected, what stays frozen, how several adapters coexist, and which state-dict keys belong to which adapter. | `module.py`, `hub.py` |
 | `rinalmo_hub/adapter.py` | The adapter file: a versioned dict carrying task, backbone size, LoRA geometry, head config, tensors, non-tensor extras, run metadata. | `module.py`, `hub.py`, ToolHub registry, `toolhub info` |
 | `rinalmo_hub/hub.py` | `RiNALMoHub` — the inference contract the whole agentic layer sits on. | `AdapterRuntime`, `cli/predict.py`, harness check 7 |
+| `rinalmo_hub/cost.py` | `CostProfiler`: per-stage (train/val/test) mean/peak GPU memory and mean iteration time, written to `run_summary.json`. | `cli/train.py` |
 | `rinalmo_hub/cli/common.py` | The construction order (build → load backbone → inject LoRA → load adapter) plus trainer/callback assembly. Getting this order wrong is a silent failure. | `train.py`, `evaluate.py` |
 | `configs/base.yaml` | Every configurable key with a default. The single source for "what can I set?". | All three CLIs, the harness, the recommender |
 

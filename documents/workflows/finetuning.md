@@ -191,6 +191,7 @@ out-of-memory failure forty minutes in*.
 outputs/<run_name>/
 ├── resolved_config.yaml     written before training starts
 ├── metrics/version_0/metrics.csv   appended as it goes — tail -f it
+├── run_summary.json         final metrics + per-stage GPU memory / iteration time
 ├── train.log                stdout + stderr
 ├── exit_code                written by the entrypoint in a `finally` block
 └── splice_site_adapter.pt   the ~6 MB artifact
@@ -254,6 +255,13 @@ For a task with **no** reference band — a generated one — it compares agains
 own earlier succeeded, non-truncated runs of the same task and arm, and labels the result a
 **baseline**, never a validated reference. The first run of a new task is reported as *"this
 run is the baseline for future ones"*.
+
+`analyze_run`'s `metrics` dict never includes the `cost/*` columns the engine's `CostProfiler`
+writes to `metrics.csv` — those are training instrumentation, not a task metric, and are
+filtered out so a run's quality numbers don't quietly acquire two timing columns. The live
+`job_status` panel above shows them unfiltered instead (useful while watching a long run), and
+the full-fidelity mean/median/p90 iteration time and mean/peak GPU memory per stage live in
+`run_summary.json`.
 
 ## Step 6 — register
 
