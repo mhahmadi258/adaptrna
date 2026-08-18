@@ -33,30 +33,32 @@ def test_all_pipeline_tools_are_bound(tools):
 
 
 def test_only_consequential_tools_are_gated():
-    # GPU hours, a new servable tool, writing code into the repository — and, gated for
-    # authority rather than cost, changing which tools the assistant may run at all.
+    # GPU hours, a new servable tool, writing code into the repository, approving the
+    # profiler's interpretation of a dataset — and, gated for authority rather than
+    # cost, changing which tools the assistant may run at all.
     assert set(GATED_TOOLS) == {
-        "start_training", "register_trained_adapter", "land_generated_code",
-        "activate_tool", "deactivate_tool",
+        "confirm_data_profile", "start_training", "register_trained_adapter",
+        "land_generated_code", "activate_tool", "deactivate_tool",
     }
 
 
 def test_profile_and_recommend_round_trip(tools, tmp_path):
+    # profile_dataset no longer matches a shipped task's on-disk layout (Phase 13) — it
+    # proposes a DatasetSpec from one flat table. recommend_training_config still needs
+    # an explicit `task` once there is no layout match to fall back on.
     built, _registry = tools
-    root = tmp_path / "train_data"
-    (root / "GS_1" / "db_1").mkdir(parents=True)
-    (root / "GS_1" / "db_1" / "Train_acceptor_400.csv").write_text(
-        "\n".join(f"g{i};{'ACGT' * 100};{i % 2}" for i in range(10)) + "\n"
+    path = tmp_path / "data.csv"
+    path.write_text(
+        "sequence,label\n" + "\n".join(f"{'ACGT' * 100},{i % 2}" for i in range(10)) + "\n"
     )
-    (tmp_path / "test_data").mkdir()
 
-    profile = built["profile_dataset"].invoke({"path": str(root)})
-    assert profile["layout_match"] == "splice_site"
+    profile = built["profile_dataset"].invoke({"path": str(path)})
+    assert profile["target_type"] == "binary"
+    assert profile["sequence_column"] == "sequence"
 
     plan = built["recommend_training_config"].invoke({
-        "data_path": str(root), "task_options": {"ss_type": "acceptor"},
+        "data_path": str(path), "task": "splice_site",
     })
-    assert plan["overrides"]["data.ss_type"] == "acceptor"
     assert plan["overrides"]["optim.lr"] == pytest.approx(3.0e-4)
     assert plan["command"][1:3] == ["-m", "adaptrna_agentic.jobs.train_entrypoint"]
 

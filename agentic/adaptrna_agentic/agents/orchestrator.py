@@ -10,6 +10,7 @@ calls that already completed when the turn resumes. A node containing only `inte
 is idempotent: on resume it returns the decision instead of raising.
 """
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -85,6 +86,9 @@ def _summarize(call: Dict[str, Any], registry: Optional[Registry] = None) -> str
         verb = "Enable" if name == "activate_tool" else "Disable"
         return f"{verb} the tool '{target}' (currently {_tool_state(registry, target)})"
 
+    if name == "confirm_data_profile":
+        return _summarize_profile(args.get("spec") or {})
+
     if name == "start_training":
         plan = args.get("plan") or {}
         return (
@@ -109,6 +113,21 @@ def _summarize(call: Dict[str, Any], registry: Optional[Registry] = None) -> str
     return f"{name}({args})"
 
 
+def _summarize_profile(spec: Dict[str, Any]) -> str:
+    row_counts = ((spec.get("split") or {}).get("row_counts")) or {}
+    counts = "/".join(str(row_counts.get(k, "?")) for k in ("train", "val", "test"))
+    rows = (spec.get("format") or {}).get("rows")
+    rows_str = f"{rows:,}" if isinstance(rows, int) else "?"
+    file_name = Path(spec.get("path") or "").name or "?"
+
+    return (
+        f"Use column '{spec.get('sequence_column', '?')}' as the sequence and "
+        f"'{spec.get('label_column', '?')}' as a {spec.get('target_type', '?')} target "
+        f"from {file_name} ({rows_str} rows → {counts} train/val/test), and build task "
+        f"'{spec.get('task_name', '?')}'"
+    )
+
+
 def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[str, Any]:
     """Everything the human should see before approving — notably the exact command."""
     args = call.get("args", {})
@@ -121,6 +140,10 @@ def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[
         details["after_approval"] = (
             "active" if call["name"] == "activate_tool" else "disabled"
         )
+
+    if call["name"] == "confirm_data_profile":
+        details["spec"] = args.get("spec") or {}
+        details["warnings"] = (args.get("spec") or {}).get("warnings")
 
     if call["name"] == "start_training":
         plan = args.get("plan") or {}

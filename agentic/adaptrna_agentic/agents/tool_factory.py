@@ -33,6 +33,7 @@ MANAGEMENT_TOOL_NAMES = (
     "deactivate_tool",
     "test_tool",
     "profile_dataset",
+    "confirm_data_profile",
     "recommend_training_config",
     "start_training",
     "job_status",
@@ -54,6 +55,7 @@ MANAGEMENT_TOOL_NAMES = (
 #: is cheap and trivially reversible, but the switch is how the user says which capabilities
 #: they trust — so it is theirs, not the model's (PHASE_10 §1).
 GATED_TOOLS = (
+    "confirm_data_profile",
     "start_training",
     "register_trained_adapter",
     "land_generated_code",
@@ -164,8 +166,27 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
     job_runner = JobRunner()
 
     def profile_dataset(path: str) -> dict:
-        """Describe a dataset: format, sequences, target, and which task can train on it."""
+        """Profile one CSV/TSV table (optionally gzipped) and propose a dataset spec.
+
+        Accepts exactly one delimited file with a sequence column and a label column;
+        refuses a directory, a FASTA file, or a label column this build cannot train on
+        (only binary, multiclass and regression targets are supported). Pass the result
+        to confirm_data_profile for the user's approval — nothing is generated or
+        trained from this call alone.
+        """
         return _profile_dataset(path)
+
+    def confirm_data_profile(spec: dict) -> dict:
+        """Put the profiler's interpretation of a dataset to the user for approval.
+
+        Pass the spec returned by profile_dataset unchanged. The user may correct the
+        column choice, the target type, the split policy and the task name before
+        approving. The approved spec is what create_task_tool consumes; nothing is
+        generated without it. Requires user approval.
+        """
+        from adaptrna_agentic.profiling.profiler import confirm_profile as _confirm_profile
+
+        return _confirm_profile(spec)
 
     def recommend_training_config(
         data_path: str,
@@ -251,7 +272,7 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
     return [
         StructuredTool.from_function(func=_surface_errors(func), handle_tool_error=True)
         for func in (
-            profile_dataset, recommend_training_config, start_training,
+            profile_dataset, confirm_data_profile, recommend_training_config, start_training,
             job_status, list_jobs, analyze_run, register_trained_adapter,
         )
     ] + _codegen_tools(registry, runtime)
