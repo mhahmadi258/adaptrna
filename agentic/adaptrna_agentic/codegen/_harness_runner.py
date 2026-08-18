@@ -296,6 +296,23 @@ class Harness:
         if bad:
             raise CheckFailed(f"non-finite metric value(s): {bad}")
 
+        # Phase 13: a task can otherwise register a primary metric nothing computes, and
+        # the failure surfaces hours later as an analyzer that reports primary_value: null
+        # on a finished run. Stage-suffix aware: PRIMARY_METRIC conventionally names the
+        # "test/" stage, but this check only ever runs the "val" stage.
+        from rinalmo_hub.registry import get_task
+
+        primary_metric = getattr(get_task(self.task_name), "PRIMARY_METRIC", None)
+        if primary_metric:
+            wanted = primary_metric.split("/", 1)[-1]
+            returned = {k.split("/", 1)[-1] for k in metrics}
+            if wanted not in returned:
+                raise CheckFailed(
+                    f"PRIMARY_METRIC '{primary_metric}' is not among the keys "
+                    f"compute_metrics returns ({sorted(metrics)}) — analyze_run would "
+                    f"report primary_value: null on a finished run."
+                )
+
         return f"metrics: {sorted(metrics)}"
 
     def check_adapter_roundtrip(self) -> str:

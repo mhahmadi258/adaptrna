@@ -157,6 +157,20 @@ def test_wrong_extract_features_is_caught(tmp_path, dataset):
     assert failed(report) & {"forward_backward", "adapter_roundtrip", "serving"}
 
 
+def test_primary_metric_not_computed_is_caught(tmp_path, dataset):
+    """Phase 13, check 5: a PRIMARY_METRIC nothing computes must fail loudly here, not
+    surface hours later as analyze_run reporting primary_value: null."""
+    task_name, staged = stage(tmp_path, dataset, sources.task_with_wrong_primary_metric)
+
+    report = run(staged, task_name)
+
+    assert not report["ok"]
+    assert "metrics" in failed(report)
+    detail = detail_of(report, "metrics")
+    assert "PRIMARY_METRIC" in detail
+    assert "test/f1_score" in detail
+
+
 def test_datamodule_that_does_not_match_the_data_is_caught(tmp_path, dataset):
     task_name, staged = stage(tmp_path, dataset, sources.good_task,
                               datamodule=sources.BAD_DATAMODULE)

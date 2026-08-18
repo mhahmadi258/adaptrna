@@ -216,6 +216,15 @@ def task_with_bad_extract_features(task_name: str) -> str:
     )
 
 
+def task_with_wrong_primary_metric(task_name: str) -> str:
+    """PRIMARY_METRIC names a metric compute_metrics never returns (only "acc" is
+    computed) -- without check 5's assertion this passes verification and only shows up
+    later as analyze_run reporting primary_value: null on a finished run."""
+    return good_task(task_name).replace(
+        'PRIMARY_METRIC = "test/acc"', 'PRIMARY_METRIC = "test/f1_score"'
+    )
+
+
 BAD_DATAMODULE = GOOD_DATAMODULE.replace('row["sequence"]', 'row["seq"]')
 
 
