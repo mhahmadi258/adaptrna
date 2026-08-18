@@ -16,6 +16,7 @@ Everything configurable, and the exact shape of everything written to disk.
 8. [The training plan](#8-the-training-plan)
 9. [Run output directory](#9-run-output-directory)
 10. [Format versions and compatibility](#10-format-versions-and-compatibility)
+11. [The `DatasetSpec` schema](#11-the-datasetspec-schema)
 
 ---
 
@@ -117,8 +118,12 @@ lists and anything else; falling back to the raw string.
 Two YAML files under
 [`agentic/adaptrna_agentic/knowledge/`](../agentic/adaptrna_agentic/knowledge/), merged and
 `lru_cache`d by `load_knowledge()`. **Every hyperparameter the recommender proposes and
-every rationale line it shows come from here**, which is what keeps the explanation and the
-executed config from drifting apart.
+every rationale line it shows come from here** — either verbatim (`arms:`, `universal:`) or
+as the output of a rule executed against the approved `DatasetSpec` (`generic.derived`,
+§11) — which is what keeps the explanation and the executed config from drifting apart.
+
+The platform ships no task definitions any more, so there is no per-task knowledge left to
+carry: no shipped task exists for an entry to describe.
 
 ### `hyperparameters.yaml`
 
@@ -132,47 +137,81 @@ arms:
       - gradient_clip_val null → a single spike collapses the adapters irrecoverably
   full_ft:                 # optim.lr 1e-5 (adamw), clip 1.0, plus artifact_note
     failure_modes:
-      - lr 1e-4 on an unfrozen backbone → destroys the backbone, MRL R² ≈ 0
+      - lr 1e-4 on an unfrozen backbone → destroys the backbone
 
 universal:
   trainer: {precision: bf16-mixed}
   why: ["fp16's range is a real risk at these learning rates"]
   nondeterminism: {note, consequence}     # FlashAttention backward; F1 95.21 vs 95.82
 
-tasks:
-  <task>:
-    primary_metric        # e.g. test/f1_score
-    higher_is_better
-    metric_scale          # percent | unit
-    reference: {band: [lo, hi] | null, tolerance, sources[], tolerance_reason}
-    wall_clock: {reference, measured}
-    defaults: {trainer: {max_epochs: N}}
-    caveats: [...]        # surfaced as plan warnings
+generic:
+  label: An unseen task trained from a single sequence+label table
+  reference:
+    band: null              # ALWAYS null — there are no known tasks to have a band
+    tolerance: 0.0
+    sources: ["No validated reference run: this task did not exist before your data."]
+  derived:                  # values that cannot transfer across datasets, computed by
+                            # recommender.py against the approved spec
+    batch_size:
+      rule: piecewise_on_median_length
+      table: [[128, 64], [512, 32], [1024, 16], [2048, 8]]     # median nt → batch
+      fallback: 4
+      why: "…"
+    max_epochs:
+      rule: step_budget
+      target_steps: [1000, 10000]
+      clamp: [1, 20]
+      why: "…"
+    num_workers:
+      value: 8
+      why: "…"
+  wall_clock:
+    reference: "unknown — no run of this task exists yet"
+    estimate_rule: "…"
+  caveats:
+    - "This task has no reference band. The first successful run becomes the baseline …"
 ```
 
-Shipped entries: `splice_site` (band 95.8–97.5 F1, ±1.0, ~7 min), `mrl` (band 0.81–0.83 R²,
-±0.02, ~5h45m), `sec_struct` (band `null` — no in-repo reference run yet).
+`arms:` and `universal:` are unchanged from before this build ships tasks — the *arm*
+settings were validated across tasks and transfer, so they still apply to any new task
+verbatim. `generic:` replaces what used to be a `tasks:` section keyed by shipped task name
+carrying a per-task reference band, epoch default and caveats: there is no longer a task to
+key that on, so `generic.reference.band` is always `null` — a real, permanent state, not a
+placeholder waiting to be filled in — and the values that used to be per-task defaults
+(`trainer.max_epochs`, `data.batch_size`) are instead **derived** from the approved spec by
+the three rules under `generic.derived`, each executed by `recommender.py` and each carrying
+the `why:` line that generates the rationale shown at the gate.
 
-A task with no entry gets `generic_task_knowledge()`: the *arm* settings still apply
-(validated across tasks and they transfer), but the reference band is explicitly `null` and
-a caveat says so — the first run on a new task is a **baseline**, not something to be judged
-against somebody else's number.
+### `target_shapes.yaml`
 
-### `task_templates.yaml`
+Three entries, keyed by **target type** — `binary`, `multiclass`, `regression` — not by a
+task shape or dataset layout; there is nothing left to match a file against.
 
-One entry per shipped task shape: `match` (target type, typical length) → `shape` (head,
-loss, metrics, `extract_features` pattern, prediction type) → `data_layout` (description,
-`required_paths` used for exact layout matching, `key_options` used to validate
-task-specific choices such as `data.ss_type: [donor, acceptor]`).
+```yaml
+target_shapes:
+  binary:
+    label: Binary sequence classification
+    head: "one linear layer on the CLS-token representation → a single logit"
+    extract_features: "representation[:, 0]   # CLS only; EOS/padding never reach the head"
+    loss: binary_cross_entropy_with_logits
+    metrics: [acc, precision, recall, f1_score]
+    primary_metric: test/f1_score
+    predict_output: "one probability per sequence — of the spec's positive_class"
+    pad_sensitive: false
+    adapter_state: "…"     # the concrete silent-failure trap for this shape
+  multiclass: {...}        # cross_entropy, test/macro_f1, pad_sensitive: false
+  regression: {...}        # mse, test/r2, pad_sensitive: true (pooled head)
+```
 
-Consumed by the profiler (to name the matching or nearest task), the recommender (to
-validate `task_options`) and the ToolSmith prompt (as "the closest known task shape").
+Each recipe's `loss`, `metrics` and `primary_metric` are filled straight into
+`DatasetSpec.head` (§11) — never chosen by the model. `head`/`extract_features` are prose
+read by the ToolSmith fallback prompt; the templates
+(`codegen/templates/*.j2`) independently reflect the same recipe in code. `predict_output`
+becomes the sentence a registered tool's description appends; `pad_sensitive` forces serving
+batch size 1 when true.
 
-`no_match_guidance` is the text shown when nothing matches — see
-[README.md gap #3](README.md#known-documentation-gaps), it is stale.
-
-`tests/test_knowledge.py` fails loudly if an edit drops one of the load-bearing numbers,
-because the recommender has no other source for them.
+`tests/test_knowledge.py` fails loudly if an edit drops one of these values, because the
+recommender and the templates have no other source for them.
 
 ## 5. `toolhub_data/tools.json` — the manifest
 
@@ -216,10 +255,12 @@ exactly, unless written as `{"approx": x, "tol": t}`.
 
 Registration rules enforced by [`Registry.register`](../agentic/adaptrna_agentic/toolhub/registry.py):
 duplicate names refused; full-FT exports refused (only the head travels in such a file);
-`lm_config` must match the hub's; `mrl` is forced to `serving.batch_size = 1` because its
-head is pad-sensitive. The artifact is copied to `<name>.pt.incoming`, the manifest is
-written, and only then is the copy moved into place — so a failure between the two leaves
-neither an orphan file nor an entry pointing at nothing.
+`lm_config` must match the hub's; a tool whose landed `spec.json` marks its head
+`pad_sensitive` (regression's pooled head, by the recipe in `target_shapes.yaml`) is forced
+to `serving.batch_size = 1` — read from the spec, not from a hardcoded task name. The
+artifact is copied to `<name>.pt.incoming`, the manifest is written, and only then is the
+copy moved into place — so a failure between the two leaves neither an orphan file nor an
+entry pointing at nothing.
 
 ## 6. `jobs_data/jobs.json` — the job store
 
@@ -230,11 +271,11 @@ neither an orphan file nor an entry pointing at nothing.
   "format_version": 1,
   "revision": 179,
   "jobs": {
-    "splice_simple_lora_20260813_101810": {   // id == the output directory's basename
-      "task": "splice_simple",
+    "my_task_lora_20260813_101810": {   // id == the output directory's basename
+      "task": "my_task",
       "arm": "lora",
       "command": ["/…/python", "-m", "adaptrna_agentic.jobs.train_entrypoint", "--task", …],
-      "output_dir": "/abs/path/outputs/splice_simple_lora_20260813_101810",
+      "output_dir": "/abs/path/outputs/my_task_lora_20260813_101810",
       "state": "running",           // running | succeeded | failed | cancelled
       "pid": 20866,
       "pid_starttime": "2149151089", // /proc/<pid>/stat field 22 — a PID alone is NOT
@@ -242,7 +283,7 @@ neither an orphan file nor an entry pointing at nothing.
       "started_at": "2026-08-13T00:18:30+00:00",
       "ended_at":   "2026-08-13T00:21:14+00:00",
       "exit_code": 0,
-      "adapter_path": "/…/splice_simple_adapter.pt",
+      "adapter_path": "/…/my_task_adapter.pt",
       "plan": { /* the full plan the run came from */ }
     }
   }
@@ -265,7 +306,7 @@ are never revisited.
 ```python
 {
   "format_version": 2,
-  "task":        "mrl",      # so the hub can dispatch with no config file
+  "task":        "my_task",  # so the hub can dispatch with no config file
   "lm_config":   "giga",     # guard: refuse to load onto a different backbone size
   "lora":        {...}|None, # None ⇒ head-only / full-FT export
   "head_config": {...},      # kwargs to rebuild the head with no YAML present
@@ -299,8 +340,9 @@ by the approval gate, the JobRunner and the analyzer.
 | `primary_metric`, `reference` | Copied from the knowledge base so the analyzer needs nothing else |
 | `estimated_wall_clock` | From `wall_clock.reference`; prefixed for a quick run |
 | `rationale` | Generated from knowledge-base entries — the model narrates these, it does not write them |
-| `warnings` | Arm notes, task caveats, quick-run truncation, missing backbone |
-| `command` | **The exact argv** the JobRunner will execute, shown verbatim in the gate |
+| `warnings` | Arm notes, generic caveats, quick-run truncation, missing backbone |
+| `command` | **The exact argv** the JobRunner will execute, shown verbatim in the gate — **rebuilt** if the human edits `overrides`/`seed`/`arm`/`quick_run` at that gate, so it can never go stale |
+| `human_overrides` | Present only if the human changed a field at the gate: `{"optim.lr": {"recommended": 0.0003, "chosen": 0.001}}`. Written by `orchestrator._apply_edits`; the job record and `analyze_run`'s report both print it, so a result is never read as having been produced on the recommended settings |
 
 `quick_run` sets `trainer.max_steps=200` and `data.num_workers=8`, and its warning is
 load-bearing: a truncated run is a smoke test and the analyzer will refuse to compare it to
@@ -346,3 +388,93 @@ live in `run_summary.json`, not in the (possibly downsampled) CSV.
 
 `ToolEntry` gained its external-tool fields additively in Phase 3, with defaults, so v1
 manifests written before that load unchanged — the pattern to follow for future additions.
+
+## 11. The `DatasetSpec` schema
+
+Produced by
+[`profiling/profiler.py`](../agentic/adaptrna_agentic/profiling/profiler.py), put through
+gate 1, consumed by `codegen/`, and landed beside the generated code as
+`adaptrna_custom/tasks/<task>/spec.json`. One object carries the user's approved
+interpretation of their data from gate 1 all the way to the registered tool — nothing
+downstream re-derives it from the CSV a second time. Full walkthrough:
+[modules/profiling-and-knowledge.md](modules/profiling-and-knowledge.md).
+
+```jsonc
+{
+  "spec_version": 1,
+  "source": "confirm_data_profile",          // "profile_dataset" until gate 1 approves it
+  "path": "/abs/path/to/data.csv",
+  "format": {"separator": ",", "compression": null, "rows": 24188, "header": true},
+
+  "sequence_column": "sequence",
+  "label_column": "label",
+  "ignored_columns": ["gene_id", "source"],  // present in the file, not used
+  "on_invalid": "fail",                      // fail | drop — rows outside ACGTUN
+
+  "target_type": "binary",                   // binary | multiclass | regression
+  "classes": ["0", "1"],                     // classification only; display order only —
+                                              // NOT what decides polarity (positive_class is)
+  "positive_class": "1",                     // binary only; required, never inferred from
+                                              // classes' ordering
+  "class_counts": {"0": 12094, "1": 12094},
+  "target_summary": null,                    // {min, max, mean} for regression instead
+
+  "alphabet": "dna",                         // dna | rna | other | unknown
+  "length": {"min": 400, "median": 400, "max": 400},
+
+  "split": {
+    "mode": "random",                        // random | column
+    "fractions": {"train": 0.8, "val": 0.1, "test": 0.1},
+    "seed": 42, "stratify": true,
+    "column": null, "mapping": null,
+    "row_counts": {"train": 19350, "val": 2419, "test": 2419},
+    "dropped_rows": 0
+  },
+  "split_candidates": {"species": {"human": 20000, "mouse": 4188}},
+
+  "task_name": "donor_sites",
+  "tool_description": "binary target trained from donors.csv",
+  "head": {
+    "kind": "cls_classifier",                // display-only; target_shapes.yaml itself
+                                              // carries no "kind" field
+    "loss": "binary_cross_entropy_with_logits",
+    "metrics": ["acc", "precision", "recall", "f1_score"],
+    "primary_metric": "test/f1_score",
+    "predict_output": "one probability per sequence — of the spec's positive_class",
+    "pad_sensitive": false
+  },
+
+  "warnings": ["1,204 sequences (5.0%) appear more than once in the file; …"],
+  "similar_tasks": []
+}
+```
+
+Two more keys appear conditionally:
+
+* `human_edits` — present only if the human changed a field at gate 1:
+  `{field: {"recommended": x, "chosen": y}}`. Written by `orchestrator._apply_edits` onto
+  the spec object itself (the training plan's equivalent field is `human_overrides`, §8).
+* `template_version` — present only in the **landed** `spec.json` of a task the template
+  path rendered (`codegen/templates/render.py::TEMPLATE_VERSION`, read from the
+  `TEMPLATE_VERSION` file next to the templates); absent for a task the LLM fallback wrote.
+  `toolhub doctor`'s `template_version` check flags a landed task whose stamped version no
+  longer matches the current template — a template fix does not reach already-landed code by
+  design, so this makes *stale* a visible state rather than an invisible one.
+
+Three properties matter, mirroring the training plan (§8):
+
+* **It is stamped twice.** `profile_dataset` stamps `source: "profile_dataset"`; gate 1's
+  re-validation (`confirm_profile`, called by the `confirm_data_profile` tool) re-stamps
+  `source: "confirm_data_profile"` only after recomputing `classes`, `class_counts`,
+  `row_counts` and `head` against the real file. `create_task_tool` refuses a spec that does
+  not carry the second stamp.
+* **`head` is filled from `target_shape(target_type)` (§4), never by the model.** Changing
+  `target_type` at the gate changes the recipe; the loss and metrics are never a free
+  choice.
+* **It is the single source of truth downstream.** The datamodule's columns, the split, the
+  primary metric, serving's pad-sensitivity and output validator, and the reuse matcher all
+  read this one object.
+
+Where it lives: in-memory during the turn; written as a fourth staged file by
+`codegen/staging.py`; landed with the other three into `adaptrna_custom/tasks/<name>/spec.json`;
+copied into `provenance["spec"]` (§5) at registration.

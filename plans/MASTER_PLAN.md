@@ -49,10 +49,22 @@ A conversational **agent platform** on top of the engine, where:
   - *New adapter tools* — the user provides data and a description, receives a recommended
     fine-tuning configuration, approves it, a LoRA run trains on the local GPU, the results
     are analyzed and presented, and on approval the adapter is registered as a tool.
-  - *New external tools* — the user names a package (e.g. ViennaRNA); the system proposes
-    the install, generates wrapper code, verifies it, and registers it on approval.
+  - *New external tools* — the user names a package; the system proposes the install,
+    generates wrapper code, verifies it, and registers it on approval.
 - Tools can be **listed, activated, deactivated and tested** from the conversation.
 - Delivery happens in three stages: **terminal chat → HTTP API → web UI**.
+
+**As of Phase 13, the platform ships no task definitions by default.** Earlier phases
+built and demonstrated the flows above against a handful of tasks distilled into the
+engine at repository creation; Phase 13 removed that scaffolding entirely; see its own
+plan, [`PHASE_13_COLD_START_SINGLE_CSV.md`](PHASE_13_COLD_START_SINGLE_CSV.md). A fresh
+install registers no tools and its knowledge base carries no per-task entries — the
+agentic layer genuinely does not know what tasks exist until a user's own data creates
+one. What it accepts to create one from is deliberately narrow: one delimited table with a
+sequence column and a label column (binary, multiclass or regression). The engine itself
+is untouched and still ships several tasks reachable from its own CLI (D1 in that plan) —
+this is a statement about what the **agentic layer** knows, not about what code exists on
+disk.
 
 ### Decisions already made
 
@@ -174,7 +186,7 @@ state) plus a **runtime** (how they execute).
 One store at `toolhub_data/` (JSON or SQLite — §10). Each entry:
 
 ```
-name            unique tool name (e.g. "splice_site_donor", "vienna_fold")
+name            unique tool name (e.g. "my_binary_classifier", "my_wrapped_tool")
 type            adapter | external
 state           active | disabled
 description     what the tool does, shown to the user and to the orchestrator
@@ -221,7 +233,7 @@ service (§3.1).
 | Agent | Role | Why it is separate |
 |---|---|---|
 | **Orchestrator** | The only agent the user talks to. Understands intent, answers questions, calls inference and management tools **directly**, walks the user through the creation flows, presents approval gates. | An executor-agent indirection for single tool calls adds latency and context loss with zero benefit. Delegation is reserved for long multi-step work. |
-| **ToolSmith** | Generates code for new tools: the three files of a new engine task (task module, datamodule, config YAML — following `engine/examples/ncrna_classification/` as the template) or an external wrapper (following the ViennaRNA reference). | Codegen wants a focused, file-centric context and its own prompt discipline, not the chat history. |
+| **ToolSmith** | Generates code for new tools, as the fallback when a deterministic path cannot (Phase 13): the three files of a task (task module, datamodule, config YAML — from the approved dataset spec plus a target-type recipe, never a shipped example) when the template renderer does not cover the spec, or an external wrapper against `toolhub/external/contract.py`'s typed spec. | Codegen wants a focused, file-centric context and its own prompt discipline, not the chat history. |
 | **Verifier** | Reviews ToolSmith output in a **fresh context**: static review against the checklists (§6), then executes CPU structural tests (module constructs on `nano`, forward pass runs, adapter round-trips) and sandboxed smoke tests, and reports findings. | An auditor that inherits the writer's context inherits the writer's blind spots. Independence is the point. |
 
 The ToolSmith↔Verifier loop is bounded (≤3 iterations); whatever the outcome, the final
@@ -254,21 +266,36 @@ LangGraph SQLite checkpointer — which also gives the API and UI session resume
 What makes recommendations *grounded* rather than hallucinated: a curated, versioned corpus
 in `agentic/knowledge/`, distilled from the engine's spec and measured runs.
 
-- **Validated hyperparameters and their failure modes.** LoRA: `lr 3e-4`,
-  `gradient_clip_val 1.0`, `layer_stride 3` — and *why*: `1e-3` trained well to step ~325,
-  then one gradient spike collapsed it into a constant-output state it never escaped.
-  Full FT: `lr 1e-5` or a head-only warm-up schedule — `1e-4` on an unfrozen backbone
-  destroys it (R² ≈ 0). Always `bf16-mixed`, never fp16. Per-task recipes (MRL paper
-  schedule, sec-struct gradual unfreezing, splice-site folds).
-- **Task-shape templates.** Data profile → task class: binary/multiclass sequence
-  classification (CLS token + linear head), sequence regression (pooled + conv head,
-  target scaler), per-pair prediction (outer-concat + ResNet2D head). Each template names
-  the head, loss, metrics, `extract_features` pattern and predict batch policy.
+- **Validated hyperparameters and their failure modes** — this part transfers across tasks
+  and is unaffected by Phase 13. LoRA: `lr 3e-4`, `gradient_clip_val 1.0`, `layer_stride 3`
+  — and *why*: `1e-3` trained well to step ~325, then one gradient spike collapsed it into a
+  constant-output state it never escaped. Full FT: `lr 1e-5` or a head-only warm-up
+  schedule — `1e-4` on an unfrozen backbone destroys it (R² ≈ 0). Always `bf16-mixed`,
+  never fp16.
+- **No per-task reference bands, as of Phase 13.** The platform ships no tasks (§1), so
+  there is no metric band to validate a run against until that task has its own run
+  history — a `generic:` entry says so explicitly (`reference.band: null`) rather than
+  inventing one, and the analyzer reports every first run as a **baseline**. What *does*
+  transfer across an unknown dataset is derived by rule from the approved spec, not
+  invented: batch size from median sequence length, epoch count from a target
+  optimiser-step budget, worker count — each rule carries a `why:` line so the rationale
+  shown to the user and the value actually used can never drift apart.
+- **Target-type recipes, not task-shape templates.** Three recipes, keyed by target type
+  alone (binary / multiclass / regression sequence classification/regression), carrying no
+  task identity and no dataset layout — there is nothing left to match a directory
+  structure against, because the platform accepts exactly one shape of input (one
+  delimited table, one sequence column, one label column). Each recipe names the head,
+  loss, metrics, `extract_features` pattern and predict batch policy, and — the headline
+  change — a deterministic template renders working code straight from it for any spec the
+  recipe covers, with a language-model generation loop as the fallback only for what it
+  does not.
 - **The three-file walkthrough** for new tasks, and the **two silent-state questions** as a
   hard Verifier checklist: (1) does the task own state predictions depend on that is not a
   head weight? (tensor → `ADAPTER_EXTRA_PREFIXES`; plain value → `adapter_extra_payload`) —
   (2) does the head need CLS/EOS/pad positions excluded in `extract_features`? Both fail
-  silently with plausible-looking numbers if missed.
+  silently with plausible-looking numbers if missed. Since Phase 13 each target-type recipe
+  states its own concrete answer to question 1, and the template encodes it once rather
+  than leaving every generated task to re-derive it.
 
 ---
 
@@ -317,6 +344,7 @@ done is demonstrated, not when its code exists.
 | 11 | Activity bar + job log | A static icon bar switches the left rail between Sessions and Jobs; selecting a run replaces the chat column with its live log; the right-hand Jobs panel is removed | Both views switch from the icon bar, a running job's log tails in the middle column, and the composer is gone while it is open | ✅ done 2026-08-14 — 408 agentic tests green (from 405) + 21 opt-in browser tests (from 15); live against the real install: 6 runs listed in the rail, `splice_simple_lora_20260813_101810` opened to its real `train.log` with `test/f1_score 0.968599` in the header, chat and composer correctly gone, zero JS errors; layout verified at 1440 px and 400 px with no horizontal overflow, and the rail-grip offset bug the activity bar exposed fixed and guarded |
 | 12 | External-tool registration + approval code editor | Two fixes: (1) `land_generated_code` for a `kind="tool"` stage now calls `register_external` automatically — evicting stale staging-path `sys.modules` entries first — so an external wrapper is active immediately after approval with no separate CLI step; (2) the approval window embeds a read-only Monaco editor (vendored at `ui/vendor/monaco/vs/`, offline-safe) with browser-style tabs when multiple files are present | Approving `land_generated_code` for a generated external wrapper produces an active manifest entry; the approval modal shows the source in a tabbed Monaco editor; `test_ui_serving.py` still asserts no external host is fetched | ✅ done 2026-08-16 — 31 tests in the affected suites green (codegen, UI serving, external registry, approval gate, tool factory, orchestrator); 2 new external-tool land→register tests; 2 new serving tests asserting the vendored Monaco loader resolves locally; docs updated (external-tools.md §6, toolhub.md, codegen.md, web-ui.md) |
 | 13 | Duplicate tool-response fix | Bug fix, plan in `plans/FIX_DUPLICATE_TOOL_RESPONSE.md`: `stream_turn` (`api/events.py`) consumes the graph with `stream_mode=["updates", "messages"]`; the `messages` branch turned *every* message — including `ToolMessage`s already emitted as `tool_result` by the `updates` branch — into a `text` frame, so a tool's output was rendered twice live (a plain bubble, then the proper result row). Fixed by gating the `messages` branch on `isinstance(message, AIMessage)` | A tool call's output streams as exactly one `tool_result` frame, never also as `text` | ✅ done 2026-08-17 — 413 agentic tests green (from 412); new regression test `test_a_tool_result_is_not_also_streamed_as_text` pins one `tool_result` per call and asserts its content never appears in the concatenated `text` stream; docs updated (api.md §4) |
+| 14 | Cold start: no shipped tasks, one CSV, four gates | Plan in [`PHASE_13_COLD_START_SINGLE_CSV.md`](PHASE_13_COLD_START_SINGLE_CSV.md): removed every shipped-task reference from the agentic layer (D1) and the ViennaRNA reference wrapper (D2); replaced directory/layout profiling with a one-table `DatasetSpec` profiler and a new gate 1 (`confirm_data_profile`); replaced the per-task knowledge base with `generic:` derived rules + `target_shapes.yaml` recipes keyed by target type; made step 2 template-first — a deterministic renderer (`codegen/templates/`) produces `task.py`/`datamodule.py`/`config.yaml` with zero model calls whenever a spec is one of three declared shapes, falling through to the existing ToolSmith/Verifier loop only when it is not, with the same 7-check harness and review on both paths; added approval-gate edits (`EDITABLE_ARGS`/`_apply_edits`) so a human can correct a field at any gate instead of only accept/decline; re-pointed serving (output notes, validators, pad-sensitivity) and reuse (`similar_tasks`) to read a landed task's own `spec.json` instead of hardcoded per-task-name dicts | A fresh install registers no tools; one CSV with a sequence and a label column reaches a servable tool through four separate gated turns; `test_no_shipped_task_knowledge.py` greps the whole `agentic/` tree for the forbidden names with no exemptions | ✅ code complete 2026-08-18 — 611 agentic tests collected (up from 381 before the phase); new test files include `test_no_shipped_task_knowledge.py`, `test_templates_render.py`/`test_templates_cover.py`, `test_codegen_paths.py`, `test_dataset_spec.py`, `test_profile_gate.py`, `test_approval_edits.py`, `test_generic_recommender.py`, `test_similar_tasks.py`, `test_runtime_validators.py`, `test_external_fixture_wrapper.py`; docs updated across `documents/`, this file and both READMEs |
 
 **Dependencies:** 0 → 1 → 2 → 3 → 4 → 5 → 6, in order. Phase 7 runs continuously from
 Phase 4 onward. Phase 8 can start after 4 (it is genuinely useful after 5). Phase 9 needs 8.

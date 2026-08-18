@@ -5,8 +5,8 @@ End-to-end procedures, step by step, naming the modules involved at each step.
 | Document | Flow | Start here when you want to… |
 |---|---|---|
 | [inference-and-tools.md](inference-and-tools.md) | A + B | Ask a question and get a prediction; list, enable, disable or test tools |
-| [finetuning.md](finetuning.md) | C | Turn your data into a new servable adapter tool |
-| [new-task-codegen.md](new-task-codegen.md) | D | Get a task written for data no shipped task can read |
+| [finetuning.md](finetuning.md) | C | Turn one CSV of yours into a new servable adapter tool |
+| [new-task-codegen.md](new-task-codegen.md) | D | Build the data loader and head for an approved spec — template-first, with a generation fallback |
 | [external-tools.md](external-tools.md) | E | Wrap a classical bioinformatics package as a tool |
 | [operations.md](operations.md) | — | Diagnose a broken install, reclaim disk, recover from a failure |
 
@@ -46,11 +46,11 @@ flowchart TD
     A -->|"yes"| A1["Flow A — inference-and-tools.md"]
     A -->|"no"| B{"A tool that does not exist yet?"}
     B -->|"a classical package"| E1["Flow E — external-tools.md"]
-    B -->|"a model capability"| C{"Can a shipped task read your data?"}
-    C -->|"profile_dataset says yes<br/>(layout_match is set)"| C1["Flow C — finetuning.md"]
-    C -->|"no"| D1["Flow D — new-task-codegen.md<br/>then Flow C"]
+    B -->|"a model capability, from one CSV"| C1["Flow C — finetuning.md<br/>(steps 1-2 are flow D, inline)"]
 ```
 
-`profile_dataset` answers the branch at the bottom for you: its `layout_match` field is
-either a task name (flow C) or `null` with a `layout_reason` explaining what the nearest
-shape expects (flow D).
+This build ships no tasks and no tools at all on a fresh install — there is no branch on
+"can a shipped task read your data", because there is no shipped task. Flow C's own step 1
+(`profile_dataset` → gate 1) and step 2 (`create_task_tool` → gate 2, documented in detail in
+[new-task-codegen.md](new-task-codegen.md)) turn one CSV into a trainable task before flow C
+continues into training; there is nothing to route around.

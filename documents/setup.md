@@ -106,14 +106,28 @@ cd engine && python -m pytest && cd ..
 
 # 3. Agentic suite: CPU, no network, no API key, ~2m40s
 cd agentic && python -m pytest && cd ..
+
+# 4. What's registered — a fresh install has nothing to list
+python -m adaptrna_agentic.cli.toolhub list
 ```
 
-Expected in a healthy checkout (measured here on 2026-08-13):
+Expected in a healthy checkout:
 
 ```
-engine:  135 passed, 7 deselected      (gpu / weights / data markers)
-agentic: 381 passed, 11 deselected     (ui marker)
+engine:  135 passed, 7 deselected      (gpu / weights / data markers)     [measured 2026-08-13]
+agentic: 611 tests collected                                              [measured 2026-08-18]
+
+$ toolhub list
+no tools registered
 ```
+
+**A fresh install genuinely lists no tools**, and that is correct, not a step you are
+missing. The platform ships no task definitions and no adapters (plan
+[`PHASE_13_COLD_START_SINGLE_CSV.md`](../plans/PHASE_13_COLD_START_SINGLE_CSV.md) §15's
+clean-slate step is what makes this true even on a checkout that carried tools from before
+that phase). The first tool on any install is one you build yourself, from one CSV, through
+the four gated steps in [workflows/finetuning.md](workflows/finetuning.md) and
+[workflows/new-task-codegen.md](workflows/new-task-codegen.md).
 
 `doctor` output is a list of `ok | WARN | FAIL` lines, each failure followed by the command
 that fixes it. It is the first thing to run whenever anything looks off. See
@@ -173,9 +187,9 @@ them; installing only the agentic package produces a clear `ToolHubError` naming
 | Component | Install | Needed for |
 |---|---|---|
 | `flash-attn` | `pip install flash-attn --no-build-isolation` | Fast CUDA attention. Lazy import; without it CPU tests still pass and CUDA training uses a slow fallback. **Its backward pass is non-deterministic** — see [architecture.md §11](architecture.md#11-engine-constraints-that-shaped-this-layer). |
-| `ViennaRNA` | Through the gated flow: `toolhub register-external adaptrna_agentic.toolhub.external.vienna` (shows the exact `pip` command, then asks) | The `vienna_fold` / `vienna_cofold` tools. Wrapped packages are **tool** dependencies and are deliberately absent from every `pyproject.toml`. |
-| `playwright` + Chromium | `pip install playwright && playwright install chromium` (~150 MB) | The 11 opt-in browser tests (`pytest -m ui`) |
-| Datasets | `python -m rinalmo_hub.cli.train --task <t> --prepare_data --set trainer.max_steps=0` | Real training on the shipped tasks. Each dataset downloads itself into `dataset/`. |
+| A classical package wrapper | Write it against `toolhub/external/contract.py` (or have the ToolSmith generate one), then the gated flow: `toolhub register-external <your_module>` (shows the exact `pip` command, then asks) | Whatever external tool you wrap. No wrapper ships with the platform any more — `contract.py` stands alone (D2); wrapped packages are **tool** dependencies and are deliberately absent from every `pyproject.toml`. |
+| `playwright` + Chromium | `pip install playwright && playwright install chromium` (~150 MB) | The opt-in browser tests (`pytest -m ui`) |
+| A dataset | Your own CSV/TSV — no download step. `python -m rinalmo_hub.cli.train --task <t> --prepare_data --set trainer.max_steps=0` still applies if you train an engine task directly from its own CLI. |
 
 ## 8. Hardware
 
@@ -184,7 +198,7 @@ them; installing only the agentic package produces a clear `ToolHubError` naming
 | Both test suites, `doctor`, registry operations, profiling, the recommender | CPU only |
 | CPU inference on a `nano` backbone | CPU (this is how the tests exercise real forward passes) |
 | Serving `giga` adapters | ~3 GB RAM/VRAM for the backbone, plus megabytes per resident adapter. Serving runs **fp32** — `dtype: auto` resolves to the model default, because non-autocast bf16 trips a dtype promotion in the engine's `TokenDropout`. |
-| Real fine-tuning | One CUDA GPU. Reference timings in the knowledge base come from an H200: splice-site LoRA **~7 min** (batch 32, 2 epochs, ~19.8k sequences); MRL **~5h45m** LoRA / ~6h41m full FT (batch 64, 51 epochs). |
+| Real fine-tuning | One CUDA GPU. There is no reference wall-clock for a task the platform has never trained — `recommend_training_config` reports `estimated_wall_clock: "unknown — no run of this task exists yet"` until a previous run of the same task and batch size gives it something to estimate from. The derived batch-size table (`knowledge/hyperparameters.yaml`'s `generic.derived`) was itself measured on an H200 80 GB: 400 nt trains comfortably at batch 32, 25–100 nt at batch 64. |
 
 One training job runs at a time by default — `JobRunner.start` refuses a second unless
 `allow_concurrent` is passed, because two `giga` runs on one GPU is how you get an
@@ -197,46 +211,43 @@ out-of-memory failure forty minutes in.
 | Run either test suite | – | ✅ | – | – | – |
 | `toolhub list` / `config` / `doctor` / `prune` | – | ✅ | – | – | – |
 | `toolhub predict` / `test` on a registered adapter | – | ✅ | optional | ✅ | – |
-| `toolhub call vienna_fold …` | – | – | – | – | – |
+| `toolhub call <your_tool>_<function> …` | – | – | – | – | – |
 | Terminal chat, HTTP API, web UI | ✅ | ✅ | optional | ✅ | – |
 | Profile data / get a recommendation | ✅ (for chat) | ✅ | – | ✅ | your own |
 | Fine-tune | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Generate a new task (flow D) | ✅ | ✅ | – (verification is CPU) | – | ✅ your own |
+| Build a task from one CSV | ✅ (for chat) | ✅ | – (verification is CPU; no model call at all on the common, template-rendered path) | – | ✅ your own |
 
 ## Packaging caveat
 
-[`agentic/pyproject.toml`](../agentic/pyproject.toml) lists its packages **explicitly**, and
-the list is incomplete:
+[`agentic/pyproject.toml`](../agentic/pyproject.toml) lists its packages **explicitly**.
+This used to be incomplete — missing `adaptrna_agentic.codegen` and
+`adaptrna_agentic.toolhub.external`, with no `package-data` entry for `knowledge/*.yaml` —
+and Phase 13 made the gap worse before fixing it: `codegen/templates/` is a **new**
+subpackage whose `.j2` files are package data a rendered task cannot be built without. The
+fix landed alongside the rest of the phase:
 
 ```toml
+[tool.setuptools]
 packages = [
     "adaptrna_agentic", "adaptrna_agentic.agents", "adaptrna_agentic.api",
-    "adaptrna_agentic.api.routers", "adaptrna_agentic.cli", "adaptrna_agentic.jobs",
-    "adaptrna_agentic.knowledge", "adaptrna_agentic.profiling", "adaptrna_agentic.toolhub",
+    "adaptrna_agentic.api.routers", "adaptrna_agentic.cli",
+    "adaptrna_agentic.codegen", "adaptrna_agentic.codegen.templates",
+    "adaptrna_agentic.jobs", "adaptrna_agentic.knowledge", "adaptrna_agentic.profiling",
+    "adaptrna_agentic.toolhub", "adaptrna_agentic.toolhub.external",
 ]
-```
-
-Missing: **`adaptrna_agentic.codegen`** and **`adaptrna_agentic.toolhub.external`**. There
-is also no `[tool.setuptools.package-data]` entry, so `knowledge/*.yaml` — which the
-ConfigRecommender cannot function without — would not be included in a wheel either.
-
-Editable installs are unaffected (setuptools' editable finder maps the top-level package to
-the source tree, so every subpackage resolves; verified in this checkout), which is why
-this has never surfaced. But `pip install ./agentic` or any wheel build would produce a
-package that fails on the first `create_task_tool` call, the first external-tool
-registration, and the first recommendation.
-
-Fix, if you ever need a distributable build:
-
-```toml
-packages = [
-    ..., "adaptrna_agentic.codegen", "adaptrna_agentic.toolhub.external",
-]
-include-package-data = true
 
 [tool.setuptools.package-data]
-"adaptrna_agentic.knowledge" = ["*.yaml"]
+adaptrna_agentic = ["knowledge/*.yaml", "codegen/templates/*.j2"]
 ```
 
-(The engine's `pyproject.toml` does this correctly, including `package-data` for
+Both the missing subpackages and the missing `package-data` entry (now covering
+`knowledge/*.yaml` **and** `codegen/templates/*.j2`) are fixed as of this phase. Editable
+installs were never affected by the old gap (setuptools' editable finder maps the top-level
+package to the source tree, so every subpackage resolves regardless of what `packages`
+lists) — that is why it went unnoticed as long as it did — but the fix means a wheel build
+(`pip install ./agentic` without `-e`) now ships a complete package too: every module that
+was previously missing, `create_task_tool`'s template path included, resolves in a
+non-editable install exactly as it does in this documented, supported one.
+
+(The engine's `pyproject.toml` has always done this correctly, including `package-data` for
 `rinalmo/resources/*.json`.)

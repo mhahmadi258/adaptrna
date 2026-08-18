@@ -30,17 +30,27 @@ links into the areas you need.
 AdaptRNA is a **conversational agent platform for RNA analysis** built on top of a
 **task-pluggable fine-tuning engine** for the RiNALMo RNA language model.
 
+The platform ships **no task definitions and no registered tools**. A fresh install knows
+how to serve a backbone and build tools on it; it does not know what any of those tools
+will be. What it accepts is one delimited table (`.csv`/`.tsv`, optionally gzipped) with a
+sequence column and a label column — binary, multiclass or regression — and it walks that
+one file through four gated steps to a servable tool: **profile** the data, **build** the
+data loader and head, **train** it, and **serve** it. Nothing about any of those steps
+assumes a particular kind of RNA task; the system genuinely has no idea what tasks exist
+until a user's data creates one.
+
 Two capabilities define it:
 
 * **Serving.** One pretrained transformer backbone is loaded once into memory. Every
   trained task lives as a small LoRA *adapter* file (~6 MB) that is made resident in that
   same backbone. Answering a question with a different task is a dictionary lookup, not a
   2.6 GB model reload.
-* **Creation at runtime.** If no tool exists for what the user wants, the platform builds
-  one — either by fine-tuning a new adapter from the user's data, or (when no existing
-  task can even *read* that data) by generating a new engine task from scratch: three
-  files, verified mechanically, reviewed by an independent agent, then landed into the
-  repository after a human approves the diff.
+* **Creation at runtime.** Every tool starts from the user's own data. `create_task_tool`
+  turns an approved dataset interpretation into a data loader and head — deterministically,
+  from a reviewed template, whenever the spec is one of the three supported shapes; only an
+  unusual spec falls through to LLM generation, verified mechanically and reviewed by an
+  independent agent either way, then landed into the repository after a human approves the
+  diff.
 
 Both neural capabilities (adapters) and classical bioinformatics packages (ViennaRNA) are
 exposed as uniform **tools** with one shared lifecycle: register, activate, deactivate,
@@ -138,10 +148,10 @@ Full detail: [architecture.md](architecture.md).
 
 | Flow | Ask | What actually happens |
 |---|---|---|
-| **A — Inference** | *"Is this sequence a donor splice site?"* | Orchestrator picks the tool → `AdapterRuntime` activates that adapter on the shared backbone → predicts → answers in task-native terms. |
-| **B — Tool management** | *"What tools are available?"*, *"disable vienna"*, *"test it"* | Registry operations through agent tools; a disabled tool refuses with the fix in the message. |
-| **C — New adapter** | *"Fine-tune this data into a tool"* | Profile → **validated** config from the knowledge base → **[approval]** → detached GPU run → analysis against reference bands → **[approval]** → registered as a servable tool. |
-| **D — New task type** | *"No task can read my data — build one"* | ToolSmith writes three files → deterministic harness runs them for real → Verifier reviews in a fresh context → **[approval on the diff]** → landed into `adaptrna_custom/` → then flow C. |
+| **A — Inference** | *"Is this sequence positive under my_tool?"* | Orchestrator picks the tool → `AdapterRuntime` activates that adapter on the shared backbone → predicts → answers in task-native terms. |
+| **B — Tool management** | *"What tools are available?"*, *"disable my_tool"*, *"test it"* | Registry operations through agent tools; a disabled tool refuses with the fix in the message. |
+| **C — New adapter** | *"Fine-tune this data into a tool"* | Profile → **validated** config from the knowledge base → **[approval]** → detached GPU run → analysis (a baseline — there is no reference band for a task the system has never seen) → **[approval]** → registered as a servable tool. |
+| **D — New task from one CSV** | *"Profile my data and build a tool from it"* | `profile_dataset` reads a single sequence+label table and proposes a `DatasetSpec` → **[approval]** → `create_task_tool` renders the data loader and head from a reviewed template whenever the spec is a supported shape (binary/multiclass/regression), falling through to ToolSmith generation only when it is not → harness (7 checks) + independent review either way → **[approval on the diff]** → landed into `adaptrna_custom/` with its own `spec.json` → then flow C. |
 | **E — New external tool** | *"Wrap this package"* | Wrapper generated against the contract → golden cases run → **[approval to install]** → registered. |
 
 Walkthroughs: [workflows/](workflows/README.md).
@@ -172,6 +182,7 @@ All runtime state sits at the repo root and is git-ignored:
 | `toolhub_data/tools.json` | The tool manifest: backbone config + one entry per tool. | [`toolhub/manifest.py`](../agentic/adaptrna_agentic/toolhub/manifest.py) |
 | `toolhub_data/adapters/*.pt` | Registry-owned adapter copies. | `Registry.register` |
 | `toolhub_data/staging/<id>/` | Generated code awaiting approval. Survives the session. | [`codegen/staging.py`](../agentic/adaptrna_agentic/codegen/staging.py) |
+| `adaptrna_custom/tasks/<name>/spec.json` | The approved `DatasetSpec` a task landed with — columns, target type, split policy, `head`, `template_version`. Read back by reuse matching (`similar_tasks`), by serving (output notes, validators, pad-sensitivity) and by `doctor`'s stale-template check. A task with no `spec.json` (hand-written, or landed before this phase) simply never matches or gets those notes — absence, not an error. | [`codegen/pipeline.py`](../agentic/adaptrna_agentic/codegen/pipeline.py), [`codegen/staging.py`](../agentic/adaptrna_agentic/codegen/staging.py) |
 | `jobs_data/jobs.json` | Training job records (state, PID identity, plan, adapter path). | [`jobs/store.py`](../agentic/adaptrna_agentic/jobs/store.py) |
 | `chat_data/sessions.sqlite` | LangGraph checkpointer — every conversation, terminal and browser alike. | `SqliteSaver` |
 | `outputs/<run_name>/` | Per-run: `resolved_config.yaml`, `metrics/version_N/metrics.csv`, `train.log`, `exit_code`, `<task>_adapter.pt`. | Engine trainer + entrypoint |
@@ -206,7 +217,7 @@ Pick the thread that matches your question:
 | *How does a prediction reach the model?* | [`toolhub/runtime.py`](../agentic/adaptrna_agentic/toolhub/runtime.py) → [`engine/rinalmo_hub/hub.py`](../engine/rinalmo_hub/hub.py) → [`engine/rinalmo_hub/module.py`](../engine/rinalmo_hub/module.py) |
 | *How does training get launched and tracked?* | [`profiling/recommender.py`](../agentic/adaptrna_agentic/profiling/recommender.py) → [`jobs/runner.py`](../agentic/adaptrna_agentic/jobs/runner.py) → [`jobs/train_entrypoint.py`](../agentic/adaptrna_agentic/jobs/train_entrypoint.py) → [`jobs/analysis.py`](../agentic/adaptrna_agentic/jobs/analysis.py) |
 | *How is generated code kept honest?* | [`codegen/pipeline.py`](../agentic/adaptrna_agentic/codegen/pipeline.py) → [`codegen/_harness_runner.py`](../agentic/adaptrna_agentic/codegen/_harness_runner.py) → [`codegen/staging.py`](../agentic/adaptrna_agentic/codegen/staging.py) |
-| *What is a task, concretely?* | [`engine/rinalmo_hub/module.py`](../engine/rinalmo_hub/module.py) → [`engine/rinalmo_hub/tasks/splice_site.py`](../engine/rinalmo_hub/tasks/splice_site.py) → [`adaptrna_custom/tasks/splice_simple/task.py`](../adaptrna_custom/tasks/splice_simple/task.py) |
+| *What is a task, concretely?* | [`engine/rinalmo_hub/module.py`](../engine/rinalmo_hub/module.py) (the subclass contract) → [`codegen/templates/task.py.j2`](../agentic/adaptrna_agentic/codegen/templates/task.py.j2) (what gets rendered from an approved spec) → `adaptrna_custom/tasks/<name>/task.py` once you have built one |
 | *How does the browser talk to the server?* | [`ui/sse.js`](../ui/sse.js) → [`api/events.py`](../agentic/adaptrna_agentic/api/events.py) → [`api/routers/sessions.py`](../agentic/adaptrna_agentic/api/routers/sessions.py) |
 
 If you only read one file to understand the design, read
@@ -247,7 +258,7 @@ documents/
 
 Two of these are worth reading early even if you are not yet changing anything:
 
-* **[testing.md](testing.md)** — how 381 tests run with no GPU, no weights and no API key,
+* **[testing.md](testing.md)** — how 611 tests run with no GPU, no weights and no API key,
   and what each test file was written to prevent. The suite doubles as documentation.
 * **[extending.md](extending.md)** — a lookup table from "I want to change X" to the file to
   edit and the things to update alongside it, plus the list of things not to do and why.
@@ -264,16 +275,16 @@ Existing prose that remains worth reading, and how it relates:
 
 ## 10. Verified facts
 
-Everything below was confirmed by running the code in this checkout on 2026-08-13, not
-copied from a plan document:
+Most of the table below was confirmed by running the code in this checkout on 2026-08-13;
+the counts were re-measured on 2026-08-18 after Phase 13 (cold start — see
+[`../plans/PHASE_13_COLD_START_SINGLE_CSV.md`](../plans/PHASE_13_COLD_START_SINGLE_CSV.md)):
 
 | Fact | Value |
 |---|---|
-| Engine test suite | **135 passed**, 7 deselected (`gpu`/`weights`/`data` markers) |
-| Agentic test suite | **381 passed**, 11 deselected (`ui` marker) |
+| Engine test suite | **135 passed**, 7 deselected (`gpu`/`weights`/`data` markers) — unchanged; Phase 13 does not touch `engine/` (D1) |
+| Agentic test suite | **611 tests** collected (`pytest tests/ --collect-only`, 2026-08-18), up from 381 before Phase 13 |
 | Python | 3.12 (`.venv/`) |
-| Registered tools in this checkout | `splice_simple`, `splice_site`, `splice_site_acceptor` (disabled), `vienna_fold`, `vienna_cofold` (disabled) |
-| Job records | 6 (5 succeeded, 1 failed) |
+| Registered tools on a fresh install | **none.** The platform ships no task definitions and no adapters; the first `toolhub list` after the Phase 13 clean-slate step (plan §15) shows an empty tool list, and the first tool on any install is one a user built from their own CSV |
 | Configured backbone | `giga` at `~/.cache/rinalmo_pretrained/giga-v1.pt` |
 | Manifest / adapter / job-store format versions | 1 / 2 / 1 |
 
@@ -285,7 +296,12 @@ working install; all are worth fixing.
 | # | Where | Issue |
 |---|---|---|
 | 1 | [`toolhub/doctor.py:174`](../agentic/adaptrna_agentic/toolhub/doctor.py#L174) | The `stale_jobs` remedy tells the user to run `toolhub job-status <id>`. **No such subcommand exists** — the toolhub CLI has no job commands at all. Job state is reachable via the `job_status` agent tool, `GET /api/jobs/{id}`, or `JobRunner.status()`. The reconciliation the message describes does happen, but only through those paths. |
-| 2 | [`agentic/pyproject.toml`](../agentic/pyproject.toml) | The explicit `[tool.setuptools] packages` list omits `adaptrna_agentic.codegen` and `adaptrna_agentic.toolhub.external`, and there is no `package-data` entry for `knowledge/*.yaml`. Editable installs (the documented and only supported path) work fine; a wheel build would ship a broken package. See [setup.md](setup.md#packaging-caveat). |
-| 3 | [`knowledge/task_templates.yaml`](../agentic/adaptrna_agentic/knowledge/task_templates.yaml) | `no_match_guidance` still says the new-task flow is one "which this build does not yet automate". It has been automated since Phase 6 — `create_task_tool` does exactly that. This text is shown to the user whenever a dataset matches no shipped task. |
-| 4 | [`toolhub/prune.py`](../agentic/adaptrna_agentic/toolhub/prune.py) | `prune(kind="jobs", jobs_dir=…)` selects candidates from the given `jobs_dir` but `_delete_job` reopens the *default* store, so an explicit `jobs_dir` is honoured for planning and ignored for deletion. Unreachable from the CLI (which never passes `jobs_dir`) and masked in tests by `ADAPTRNA_JOBS_DIR`; a latent trap for a future caller. |
-| 5 | [`toolhub/prune.py`](../agentic/adaptrna_agentic/toolhub/prune.py) | `prune sessions --older-than N` compares the age of the *whole SQLite file*, not of each session, so it is all-or-nothing per store. The kept-reason string says so ("store younger than…"), but the flag reads as per-session. |
+| 2 | [`toolhub/prune.py`](../agentic/adaptrna_agentic/toolhub/prune.py) | `prune(kind="jobs", jobs_dir=…)` selects candidates from the given `jobs_dir` but `_delete_job` reopens the *default* store, so an explicit `jobs_dir` is honoured for planning and ignored for deletion. Unreachable from the CLI (which never passes `jobs_dir`) and masked in tests by `ADAPTRNA_JOBS_DIR`; a latent trap for a future caller. |
+| 3 | [`toolhub/prune.py`](../agentic/adaptrna_agentic/toolhub/prune.py) | `prune sessions --older-than N` compares the age of the *whole SQLite file*, not of each session, so it is all-or-nothing per store. The kept-reason string says so ("store younger than…"), but the flag reads as per-session. |
+
+Two gaps this list used to carry are now closed by Phase 13: `agentic/pyproject.toml`'s
+`packages`/`package-data` omission (`codegen`, `codegen.templates`, `toolhub.external`,
+`knowledge/*.yaml`, `codegen/templates/*.j2` are all declared now — see
+[setup.md](setup.md#packaging-caveat)), and the stale `no_match_guidance` text in
+`knowledge/task_templates.yaml` (that file is deleted; its replacement,
+`target_shapes.yaml`, carries no such text).

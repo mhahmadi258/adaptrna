@@ -37,69 +37,74 @@ foundation-model call (`--warmup` for eager).
 ```bash
 python -m adaptrna_agentic.cli.chat                      # REPL, session 'default'
 python -m adaptrna_agentic.cli.chat --session paper      # named persistent session
-python -m adaptrna_agentic.cli.chat --once "Is GGC...ACU a donor splice site?"
+python -m adaptrna_agentic.cli.chat --once "Is GGC...ACU positive under my_tool?"
 python -m adaptrna_agentic.cli.chat --list-sessions
 ```
 
 Per-role models default to `anthropic:claude-opus-5`; override with `ADAPTRNA_MODEL`
 (all roles) or `ADAPTRNA_MODEL_ORCHESTRATOR` / `_TOOLSMITH` / `_VERIFIER`.
 
-## Fine-tuning from chat (Phase 5)
+## From one CSV to a servable tool (Phases 5-6, rebuilt in Phase 13)
 
-Ask for a new adapter and the assistant profiles your data, recommends a validated
-configuration, trains it on the local GPU, analyses the result, and registers it as a
-tool — pausing for your approval before it burns GPU hours or adds a servable tool:
+The platform starts with **no tools and no task definitions**. Everything servable begins
+from one file you provide — `.csv`/`.tsv`, optionally gzipped — with one sequence column
+and one label column holding a binary, multiclass, or continuous target. Four steps take
+it from there to a registered tool, each its own turn in the conversation, each ending in
+your approval — nothing auto-chains to the next step:
 
 ```
-you> My data is at ~/data/train_data — what's in it?
-you> Recommend a fine-tuning setup for it.
+you> Profile ~/data/my_data.csv.
+#    → profile_dataset reads the file and proposes an interpretation: which column is
+#      the sequence, which is the label, the target type, a split, and any data-quality
+#      warnings (duplicate sequences, leakage across a column split, class imbalance)
+#    → confirm_data_profile — approval gate: edit any field (column, target type,
+#      split, task name, positive class), or approve as proposed
+you> Build the task.
+#    → create_task_tool takes the approved spec and renders task.py / datamodule.py /
+#      config.yaml straight from a reviewed template, deterministically and with no
+#      model call, whenever the spec is one of the three supported shapes; an unusual
+#      spec falls back to writing the code with a model instead — either way it then
+#      runs the same 7-check harness against your real file and an independent review
+#    → land_generated_code — approval gate: file list, line counts, the diff, and which
+#      path produced it (rendered or generated)
+you> Recommend a training config.
+#    → hyperparameters DERIVED from the approved spec (batch size from sequence length,
+#      epochs from a step budget) plus validated arm settings — never invented, and
+#      there is no reference metric band, because there is no run of this task yet
 you> Run it.                     ← approval gate: shows the exact command, waits for [y/N]
 you> How's it going?             ← the job runs detached; the chat stays responsive
-you> Analyze the run.
-you> Register it as my_tool.      ← approval gate
-```
-
-The recommendation is **deterministic**: every hyperparameter comes from
-`adaptrna_agentic/knowledge/*.yaml` (validated settings, their failure modes, reference
-metric bands), and the rationale shown to you is generated from the same entries — the
-model narrates, it never invents a number. Jobs are recorded in `jobs_data/`, run
-artifacts land in `outputs/<run_name>/`, and one training job runs at a time by default.
-
-Two rules the analyzer enforces: a run truncated by `trainer.max_steps` is never compared
-to reference metrics, and a difference inside the task's tolerance is never called a
-regression (FlashAttention's non-deterministic backward gave F1 95.21 vs 95.82 for the
-same command and seed).
-
-Hyperparameters can only come from the knowledge base: `start_training` refuses any plan
-that did not come out of `recommend_training_config`, so the rule is enforced by code
-rather than by asking the model to behave.
-
-## Building new tools from chat (Phase 6)
-
-When no existing task can read your data, the assistant writes one — three files, no
-engine change — verifies it, and stages it for your review:
-
-```
-you> I have labelled sequences in dod_data/. Can anything train on this?
-#    → profile: no shipped task reads this layout
-you> Then build me a task for it, called my_task.
-#    → ToolSmith writes task.py / datamodule.py / config.yaml
-#    → harness runs it for real: import, config, datamodule on YOUR data,
-#      forward+backward, metrics, adapter round trip, serving through the hub
-#    → an independent reviewer checks what tests cannot
-you> Land it.                     ← approval gate: file list, line counts, staging path
+you> Analyze the run.            ← reported as a baseline: the first successful run
+                                    becomes what later runs of the same task compare against
+you> Register it as my_tool.     ← approval gate
 ```
 
 Generated code lands in [`adaptrna_custom/`](../adaptrna_custom/) — git-tracked, yours to
-edit, never silently regenerated. Staged code survives the session, so you can open it in
-an editor and approve it later (`list_staged_code`).
+edit, never silently regenerated — alongside `spec.json`, the approved dataset
+interpretation the task landed with. Staged code survives the session, so you can open it
+in an editor and approve it later (`list_staged_code`).
 
-The harness is the trust boundary, so it is itself controlled: the shipped tasks are run
-through it in CI, and deliberately broken fixtures must fail it. Its sharpest check is the
-adapter **round-trip prediction equivalence** — randomise everything the adapter should
-carry, predict, save, reload into a fresh module, predict again, and require identical
-outputs. That turns this project's worst silent failure (task state that never reaches the
-adapter file) into a hard test rather than a question on a checklist.
+Training is **deterministic**: every hyperparameter comes from
+`adaptrna_agentic/knowledge/*.yaml` (validated arm settings and their failure modes, plus
+rules derived from your approved spec), and the rationale shown to you is generated from
+the same entries — the model narrates, it never invents a number. Jobs are recorded in
+`jobs_data/`, run artifacts land in `outputs/<run_name>/`, and one training job runs at a
+time by default.
+
+Two rules the analyzer enforces: a run truncated by `trainer.max_steps` is never compared
+to a reference, and a difference inside tolerance is never called a regression
+(FlashAttention's non-deterministic backward gave F1 95.21 vs 95.82 for the same command
+and seed on one task). Hyperparameters can only come from the knowledge base:
+`start_training` refuses any plan that did not come out of `recommend_training_config`, so
+the rule is enforced by code rather than by asking the model to behave.
+
+The harness is the trust boundary, so it is itself controlled: known-good fixture tasks
+run through it in CI (one per supported target type), and deliberately broken fixtures
+must fail it. Its sharpest check is the adapter **round-trip prediction equivalence** —
+randomise everything the adapter should carry, predict, save, reload into a fresh module,
+predict again, and require identical outputs. That turns this project's worst silent
+failure (task state that never reaches the adapter file) into a hard test rather than a
+question on a checklist — and on the template path, a property proven once for the
+template and inherited by every task rendered from it.
 
 Generated code runs under a subprocess with time, memory and file-size limits. That is
 **accident-isolation, not adversarial sandboxing** — the human diff gate is the real

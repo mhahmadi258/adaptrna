@@ -3,6 +3,11 @@
 Asking a question and getting a prediction, and the lifecycle operations around the tools
 that answer it.
 
+Every example below uses tools you built yourself — an adapter you trained from your own
+CSV ([finetuning.md](finetuning.md)) and a wrapper you registered around an external package
+([external-tools.md](external-tools.md)). A fresh install starts with no tools at all; there
+is nothing to predict with until you have built or registered one.
+
 ---
 
 ## Flow A — inference
@@ -16,12 +21,12 @@ python -m adaptrna_agentic.cli.chat --session work
 ```
 you> What tools are available?
   → list_tools({})
-    = [{"name": "splice_site", "type": "adapter", "state": "active", …}, …]
+    = [{"name": "my_binary_tool", "type": "adapter", "state": "active", …}, …]
 
-you> Is TTTTATAAGCGGTCAGAAACT…AAATGAANN a donor splice site?
-  → splice_site({sequences: ["TTTTATAAGC…"]})
+you> Is this sequence a positive example: TTTTATAAGCGGTCAGAAACT…AAATGAANN?
+  → my_binary_tool({sequences: ["TTTTATAAGC…"]})
     = [0.9998]
-The model gives a probability of 0.9998 that this window contains a donor splice site.
+The model gives a probability of 0.9998 that this sequence is positive.
 ```
 
 ### From the CLI, no API key needed
@@ -30,9 +35,9 @@ The model gives a probability of 0.9998 that this window contains a donor splice
 toolhub="python -m adaptrna_agentic.cli.toolhub"
 
 $toolhub list
-$toolhub predict splice_site --sequences ACGUACGU... 
-$toolhub predict splice_site --input windows.txt --output preds.json
-$toolhub call vienna_fold sequence=GGGGAAAACCCC
+$toolhub predict my_binary_tool --sequences ACGUACGU...
+$toolhub predict my_binary_tool --input sequences.txt --output preds.json
+$toolhub call my_external_tool sequence=GGGGAAAACCCC
 ```
 
 `--input` reads one sequence per line, skipping `>` and `#` lines, so a FASTA file works
@@ -42,9 +47,9 @@ as-is.
 
 ```bash
 curl -s localhost:8000/api/tools | jq
-curl -s -X POST localhost:8000/api/tools/splice_site/predict \
+curl -s -X POST localhost:8000/api/tools/my_binary_tool/predict \
      -H 'content-type: application/json' -d '{"sequences": ["ACGU..."]}'
-curl -s -X POST localhost:8000/api/tools/vienna_fold/call \
+curl -s -X POST localhost:8000/api/tools/my_external_tool/call \
      -H 'content-type: application/json' -d '{"args": {"sequence": "GGGGAAAACCCC"}}'
 ```
 
@@ -62,9 +67,9 @@ sequenceDiagram
     participant H as RiNALMoHub
 
     U->>O: question with a sequence
-    O->>TF: splice_site(sequences=[...])
+    O->>TF: my_binary_tool(sequences=[...])
     TF->>TF: _check_active — disabled? ToolException with the fix
-    TF->>RT: predict("splice_site", seqs)
+    TF->>RT: predict("my_binary_tool", seqs)
     RT->>RT: inference_lock
     RT->>RT: entry checks: type · state · artifact exists
     opt first foundation-model call in this process
@@ -83,15 +88,17 @@ sequenceDiagram
 Details: [../modules/toolhub.md](../modules/toolhub.md),
 [../architecture.md §5](../architecture.md#5-inference-data-flow).
 
-### Output types per task
+### Output types per target type
 
-| Task | `predict` returns |
+A tool's output shape follows its `DatasetSpec`'s `target_type`, not a per-task special
+case — see [`knowledge/target_shapes.yaml`](../configuration.md#4-the-knowledge-base):
+
+| `target_type` | `predict` returns |
 |---|---|
-| `splice_site` | One probability in `[0, 1]` per sequence |
-| `mrl` | One mean ribosome load per sequence, **on the original scale**, clamped at 0 |
-| `sec_struct` | One base-pairing matrix per sequence (`L × L`) — large; served one at a time |
-| `splice_simple` (generated) | `{"probability": float, "label": 0|1}` per sequence |
-| `vienna_fold` / `vienna_cofold` | `{"structure": dot-bracket, "mfe": kcal/mol}` |
+| `binary` | One probability in `[0, 1]` per sequence — of the spec's `positive_class` |
+| `multiclass` | One class label plus per-class probabilities per sequence |
+| `regression` | One predicted value per sequence, on the original target scale |
+| an external tool | Whatever shape its wrapper's golden cases document, e.g. `{"structure": dot-bracket, "mfe": kcal/mol}` for a folding tool |
 
 ### First call is slow
 
@@ -143,7 +150,7 @@ an adapter, and a resident adapter costs megabytes. What changes is that every c
 refuses it:
 
 ```
-Tool 'vienna_fold' is disabled. Enable it with `toolhub activate vienna_fold`.
+Tool 'my_binary_tool' is disabled. Enable it with `toolhub activate my_binary_tool`.
 ```
 
 In chat the model receives that same string as a tool result and can act on it — which is
@@ -157,22 +164,21 @@ tool accurately. It is not permission to switch it on.
 you; only your answer changes anything:
 
 ```
-you> Disable the fold tool, then fold GGGGAAAACCCC anyway.
-  → deactivate_tool({name: "vienna_fold"})   ⏸ approval: Disable the tool 'vienna_fold' (currently active)
-you> [approve]                               = 'vienna_fold' is now disabled
-  → vienna_fold({sequence: "GGGGAAAACCCC"})  = Tool 'vienna_fold' is disabled. Only the user can enable it…
-ai> It is off now, so I cannot fold that. Want me to ask you to turn it back on?
+you> Disable my_binary_tool, then use it anyway.
+  → deactivate_tool({name: "my_binary_tool"})   ⏸ approval: Disable the tool 'my_binary_tool' (currently active)
+you> [approve]                                   = 'my_binary_tool' is now disabled
+  → my_binary_tool({sequences: ["GGGGAAAACCCC"]})  = Tool 'my_binary_tool' is disabled. Only the user can enable it…
+ai> It is off now, so I cannot run that. Want me to ask you to turn it back on?
 you> yes
-  → activate_tool({name: "vienna_fold"})     ⏸ approval: Enable the tool 'vienna_fold' (currently disabled)
-you> [decline]                               = The user declined. Do not retry.
+  → activate_tool({name: "my_binary_tool"})     ⏸ approval: Enable the tool 'my_binary_tool' (currently disabled)
+you> [decline]                                   = The user declined. Do not retry.
 ```
 
 Decline and the manifest is untouched — `toolhub_data/tools.json` still reads
-`"state": "disabled"`. Approve and the tool flips and the fold runs
-(`{"structure": "((((....))))", "mfe": -5.4}`).
+`"state": "disabled"`. Approve and the tool flips and predictions resume.
 
 Until Phase 10 this flow ran without stopping: the model hit the refusal, called
-`activate_tool` itself, and folded the sequence — a documented feature that turned out to
+`activate_tool` itself, and ran the tool anyway — a documented feature that turned out to
 make the switch meaningless in practice. See
 [PHASE_10 §1](../../plans/PHASE_10_SESSION_RAIL_AND_TOOL_GATE.md) for the reversal, and
 [agents.md §4](../modules/agents.md#4-the-approval-gate) for why this is gated for authority
@@ -183,13 +189,13 @@ For a full cleanup, `AdapterRuntime.rebuild()` (or `toolhub rebuild`) drops the 
 ### Testing a tool
 
 ```bash
-$toolhub test splice_site      # adapter → smoke test; exit code 1 if not ok
-$toolhub test vienna_fold      # external → golden cases
+$toolhub test my_binary_tool      # adapter → smoke test; exit code 1 if not ok
+$toolhub test my_external_tool    # external → golden cases
 ```
 
 | Kind | What runs |
 |---|---|
-| Adapter | The stored `test.sequences` through the tool, then: one output per sequence, a per-task output-form validator (probabilities in `[0,1]`, non-negative MRL, square `L×L` matrices), and an optional exact comparison against `test.expected` within `test.tolerance` |
+| Adapter | The stored `test.sequences` through the tool, then: one output per sequence, a validator for the tool's own `target_type` (probabilities in `[0,1]` for binary, a recorded class label for multiclass, a finite scalar for regression), and an optional exact comparison against `test.expected` within `test.tolerance` |
 | External | Every golden case from the manifest entry, comparing exactly or within `{"approx", "tol"}` |
 
 Reports share one shape — `{name, ok, checks: [...], outputs}` — so the CLI, the chat and the
@@ -198,17 +204,17 @@ browser render the same thing.
 ### Registering an adapter by hand
 
 ```bash
-$toolhub register outputs/my_run/splice_site_adapter.pt \
-    --name donor \
-    --description "Donor splice-site probability (Spliceator, 400 nt windows)" \
-    --test-input windows.txt
+$toolhub register outputs/my_run/my_task_adapter.pt \
+    --name my_binary_tool \
+    --description "Binary classifier trained on my own labelled sequences" \
+    --test-input sequences.txt
 ```
 
 | Flag | Effect |
 |---|---|
 | `--name` | Defaults to the adapter's task name |
 | `--description` | Shown to the user **and to the model** — worth writing carefully |
-| `--batch-size` | Serving policy; `mrl` is forced to 1 automatically |
+| `--batch-size` | Serving policy; a tool whose landed spec marks its head `pad_sensitive` (regression, by default) is forced to 1 automatically |
 | `--test-sequences` / `--test-input` | What `toolhub test` will run |
 | `--link` | Reference the file in place instead of copying into `toolhub_data/adapters/` |
 
@@ -216,7 +222,7 @@ Refused, with the reason up front: a duplicate name, a **full fine-tuning export
 head travels in the file), or an adapter trained on a different backbone size.
 
 Registering the *result of a training run* is normally done through the chat instead, behind
-an approval gate — see [finetuning.md](finetuning.md#step-6--register).
+an approval gate — see [finetuning.md](finetuning.md#step-4--analyse-and-serve).
 
 ### Where tool state lives
 

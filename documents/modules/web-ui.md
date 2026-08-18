@@ -107,9 +107,14 @@ api.tools() api.tool(n) api.activate(n) api.deactivate(n) api.testTool(n) api.pr
 api.jobs() api.job(id) api.jobLogs(id, tail) api.jobAnalysis(id) api.cancelJob(id)
 api.sessions() api.history(id)
 api.createSession(id) api.renameSession(id, next) api.deleteSession(id)
-sendMessage(session, text, onEvent)              // SSE
-resumeSession(session, approved, note, onEvent)  // SSE
+sendMessage(session, text, onEvent)                     // SSE
+resumeSession(session, approved, note, edits, onEvent)  // SSE
 ```
+
+`edits` (Phase 13 §5) is a plain `{dottedPath: value}` object built by `app.js::_collectEdits()`
+(§5 below); `resumeSession` only puts an `edits` key on the request body when it is
+non-empty, so a plain approve/decline sends exactly what it always sent — no existing gate
+had to change to keep working.
 
 Errors carry `status` and `retryable` onto the thrown `Error`, and the message is
 `payload.error` — the server's own text:
@@ -216,6 +221,35 @@ expected case forever; it unhides only for a degraded install or a server that h
 — which is also exactly when the doctor report behind it is worth reaching. Clicking it opens
 that report in the inspector, and it is the only route to `/api/doctor` from the browser.
 
+### The approval modal's edit form (Phase 13 §5)
+
+When an `approval_required` payload's `details.spec` is present — gate 1,
+`confirm_data_profile` — `render.js::approvalBody` renders both a read-only summary
+(`specSummary`) and, below it inside a collapsed `<details>` ("edit fields"), one input per
+whitelisted path from `tool_factory.EDITABLE_ARGS["confirm_data_profile"]`
+(`specForm`/`specField`, [agents.md](agents.md#4-the-approval-gate)): sequence/label column,
+target type, task name, tool description, positive class, invalid-row policy, and the split
+fields (mode, column, seed, stratify, the three fractions, and a JSON textarea for a
+column-mode mapping). Every input is pre-filled with the profiler's own proposed value —
+`input.defaultValue` — which is what makes collection cheap.
+
+`showApproval` mounts the form; `decide(approved)` calls `_collectEdits()` only on an
+approve, and it walks every `[data-edit-path]` input under `#approval-body`, **skipping any
+whose current value still equals its `defaultValue`** — so an edits object only ever names
+what the human actually changed, exactly like the terminal's `field=value` staging
+(`cli/chat.py::_prompt_approval`, [cli.md](cli.md)). Values are coerced back from plain
+strings: the JSON textarea parses (and is silently dropped if malformed, rather than
+sending garbage), `"true"`/`"false"` become booleans, anything else that parses as a number
+becomes one, and everything else stays a string. `resumeSession` then attaches the result as
+`edits` only if it is non-empty (§4).
+
+There is, as of this phase, **no equivalent form for `start_training`**
+(`EDITABLE_ARGS["start_training"]`: `plan.overrides.*`, `plan.seed`, `plan.arm`,
+`plan.quick_run`) — the browser can still *send* a training-plan edit, since `_collectEdits`
+and `resumeSession` are generic over whatever `[data-edit-path]` inputs exist on the page,
+but nothing in `render.js` currently emits one for gate 3. Editing the recommended
+hyperparameters at the gate is reachable today only from the terminal.
+
 ## 6. `render.js`, `md.js`, `dom.js`
 
 `dom.js` exports `el(tag, props, ...children)` and `clear(node)`. **Nothing in the client
@@ -229,10 +263,26 @@ here.
 `jobRow(job, status, handlers, isCurrent)`, `jobLogHead(job, status, handlers, options)`,
 `analysisReport(report)`, `approvalBody(request)`, `editorMountFiles(mount)`.
 
-`approvalBody` now embeds a **tabbed code editor** when the approval payload's `files` entries
-include a `content` field (which `land_generated_code` approvals do). One browser-style tab
-per file; clicking a tab switches the Monaco model. The editor is read-only. `editorMountFiles`
-is a companion accessor that `app.js` uses to retrieve the file list after DOM insertion.
+`approvalBody` embeds a **tabbed code editor** when the approval payload's `files` entries
+include a `content` field (which `land_generated_code` approvals do, on either the template
+or the generated codegen path — [codegen.md](codegen.md)). One browser-style tab per file;
+clicking a tab switches the Monaco model. **The editor is read-only** — this was a Phase 12
+decision, unrelated to Phase 13, and it still holds: editing generated or rendered code at
+the gate would mean landing something the harness never actually verified in that edited
+form, so the only legitimate way to change it is to decline and ask for a different
+attempt. `editorMountFiles` is a companion accessor that `app.js` uses to retrieve the file
+list after DOM insertion.
+
+This is a genuinely different call from the **editable** spec form `approvalBody` also
+builds for gate 1 (above), and the two rest on different reasoning rather than an
+inconsistency to reconcile: a `DatasetSpec` field is one structured value with a validated
+range (a column name, a fraction, a target type) that the gate re-validates and
+re-derives on approval regardless of who supplied it, so editing it is safe and cheap.
+Generated *code* is exactly what a harness run and an independent review already judged;
+changing it after that judgment was made would silently invalidate both. Code review needs
+a human reading real code, not editing it inline; a structured spec field is safe to edit
+inline. `tool_factory.EDITABLE_ARGS` encodes the same asymmetry server-side —
+`land_generated_code` is the one gated tool with no entry at all.
 
 `progressLines` is shared by the rail row and the log header so epoch/step and the metric
 chips render identically in both.

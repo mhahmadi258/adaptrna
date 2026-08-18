@@ -140,8 +140,8 @@ agentic/
 │   │   ├── doctor.py                  read-only health checks, each with a remedy
 │   │   ├── prune.py                   the only destructive code path in the project
 │   │   └── external/
-│   │       ├── contract.py            ExternalToolSpec + loader + install + golden runner
-│   │       └── vienna.py              the hand-written reference wrapper (ViennaRNA)
+│   │       └── contract.py            ExternalToolSpec + loader + install + golden runner —
+│   │                                  stands alone; no example wrapper ships beside it
 │   ├── agents/                 [lib]  see modules/agents.md
 │   │   ├── orchestrator.py            the LangGraph chat graph + approval node
 │   │   ├── tool_factory.py            ToolHub → LangChain bridge; all 16 management tools
@@ -149,25 +149,42 @@ agentic/
 │   │   ├── verifier.py                independent review in a fresh context
 │   │   └── hello.py                   Phase-0 scaffold graph + gc_content demo tool
 │   ├── codegen/                [lib]  see modules/codegen.md
-│   │   ├── pipeline.py                the bounded ToolSmith ⇄ Verifier loop
+│   │   ├── pipeline.py                create_task(spec): template path first, then the
+│   │   │                              bounded ToolSmith ⇄ Verifier loop as fallback
 │   │   ├── harness.py                 launches the runner, summarises, enforces requirements
 │   │   ├── _harness_runner.py  [entry] the 7 checks, executed inside the sandbox
 │   │   ├── sandbox.py                 subprocess + rlimits + timeout + result marker
-│   │   ├── staging.py                 stage / list / load / land / discard
+│   │   ├── staging.py                 stage / list / load / land / discard; spec.json travels
+│   │   │                              with the other files, not counted among them
 │   │   ├── discovery.py               import adaptrna_custom tasks so @register_task fires
-│   │   └── prompts.py                 context assembly for both agents
+│   │   ├── prompts.py                 context assembly for both agents: contract, silent-
+│   │   │                              failure rules, the approved spec, one target-type recipe
+│   │   └── templates/                 deterministic renderer — the template-first path (D13)
+│   │       ├── render.py                    covers(spec) · render(spec) -> {task.py,
+│   │       │                                datamodule.py, config.yaml}
+│   │       ├── TEMPLATE_VERSION             one integer, bumped on any template change
+│   │       ├── task.py.j2                   full BaseDownstreamModule subclass, self-contained
+│   │       ├── datamodule.py.j2
+│   │       └── config.yaml.j2
 │   ├── jobs/                   [lib]  see modules/jobs.md
 │   │   ├── runner.py                  launch/track/cancel; PID identity; metrics.csv reader
 │   │   ├── store.py                   jobs.json with atomic writes + revision counter
 │   │   ├── analysis.py                RunAnalyzer: verdict + reasons + remedies
 │   │   └── train_entrypoint.py [entry] the MASTER_PLAN §3.4 seam
 │   ├── profiling/              [lib]  see modules/profiling-and-knowledge.md
-│   │   ├── profiler.py                describe a dataset; name the task that can read it
-│   │   └── recommender.py             profile → executable, stamped training plan
-│   ├── knowledge/              [cfg]  the grounding corpus
-│   │   ├── __init__.py                loaders (lru_cached) + generic fallback entry
-│   │   ├── hyperparameters.yaml       validated arms, failure modes, per-task bands + ETAs
-│   │   └── task_templates.yaml        data profile → task shape; no_match_guidance
+│   │   ├── profiler.py                one-table reader: columns, target type, split, quality/
+│   │   │                              leakage warnings, `DatasetSpec` proposal; similar_tasks
+│   │   └── recommender.py             approved spec → executable, stamped training plan
+│   ├── knowledge/              [cfg]  the grounding corpus — no per-task knowledge (D1)
+│   │   ├── __init__.py                loaders (lru_cached): arm, universal, generic_knowledge,
+│   │   │                              derived, target_shape
+│   │   ├── hyperparameters.yaml       validated arms + failure modes (unchanged); `generic:` —
+│   │   │                              no reference band (no task pre-exists any dataset), plus
+│   │   │                              the derivation rules for batch size / epochs / workers
+│   │   └── target_shapes.yaml         three target-type recipes (binary/multiclass/regression):
+│   │                                  head, loss, metrics, extract_features, pad_sensitive,
+│   │                                  the adapter-state trap for that shape. No task identity,
+│   │                                  no dataset layout — replaces task_templates.yaml
 │   ├── api/                    [lib]  see modules/api.md
 │   │   ├── app.py                     create_app: error handlers, bearer auth, routers
 │   │   ├── deps.py                    Services singletons; WAL checkpointer; is_loopback
@@ -179,11 +196,19 @@ agentic/
 │       ├── toolhub.py          [entry] management CLI (15 subcommands)
 │       └── serve.py            [entry] uvicorn launcher + the binding refusal
 ├── scripts/
-│   └── make_demo_data.py       [entry] regenerate dod_data/ from Spliceator folds
-└── tests/                      [test]  381 tests + 11 opt-in — see testing.md
-    ├── conftest.py                    nano adapter fixtures built through the public API only
+│   ├── make_demo_data.py       [entry] regenerate the demo `sequence,label` CSV for the
+│   │                                  cold-start codegen flow, from a source fold directory
+│   └── update_template_golden.py [entry] regenerate the golden files
+│                                  test_templates_render.py checks rendered output against —
+│                                  run after any change to codegen/templates/, then read the diff
+└── tests/                      [test]  611 tests — see testing.md
+    ├── conftest.py                    real nano adapter fixtures built through the engine's
+    │                                  public API only, over LOCALLY-DEFINED demo task classes
+    │                                  (never the engine's shipped tasks — D1)
     ├── scripted_model.py              the fake chat model every graph test uses
     ├── api_helpers.py                 SSE collection helpers for the HTTP tests
+    ├── forbidden_strings.py           the string list test_no_shipped_task_knowledge.py greps
+    │                                  every file under agentic/ for, with no exemptions
     ├── fixtures/
     │   ├── broken_task_sources.py     deliberately defective tasks the harness MUST fail
     │   └── dummy_external.py          a wrapper module with no real package behind it
@@ -194,7 +219,7 @@ agentic/
 
 | File | Responsibility | Depended on by |
 |---|---|---|
-| `agents/tool_factory.py` | The single meeting point of the LLM and the deterministic services. Defines the 16 management tools, wraps every registered tool, and names the gated set — which since Phase 10 includes the two tool-state toggles. | orchestrator, every test of agent behaviour |
+| `agents/tool_factory.py` | The single meeting point of the LLM and the deterministic services. Defines the 17 management tools (management, pipeline and codegen groups — including `confirm_data_profile`, gate 1), wraps every registered tool, and names the gated set and `EDITABLE_ARGS`, the per-tool whitelist a human's approval-gate edits are checked against. | orchestrator, every test of agent behaviour |
 | `api/sessions_store.py` | Sessions as a managed resource: recency listing and rename, in plain SQL over the checkpointer's own tables. Owns no schema — a sidecar metadata table would be a second source of truth the terminal never writes. | `api/routers/sessions.py`, the web UI's session rail |
 | `toolhub/manifest.py` | The on-disk truth about what tools exist. Pure data + JSON I/O; never imports the engine. | registry, runtime, doctor, prune, recommender, API |
 | `toolhub/runtime.py` | The only place a backbone is ever loaded in this layer, and the only place inference is serialised. | chat, CLI, HTTP, harness-adjacent code |
@@ -212,12 +237,19 @@ adaptrna_custom/
 ├── README.md              [doc]  what lives here and the guarantee that nothing regenerates it
 ├── __init__.py
 ├── tasks/
-│   ├── __init__.py
-│   └── splice_simple/     the task the ToolSmith generated, verified and landed
+│   ├── __init__.py        empty apart from this on a fresh install (plan §15) —
+│   │                      the first entry here is whatever you build from your own CSV
+│   └── <task_name>/       one landed task, built from an approved DatasetSpec
 │       ├── __init__.py
-│       ├── task.py        @register_task("splice_simple"); threshold in the extra payload
-│       ├── datamodule.py  reads dod_data/splice_simple_{train,val,test}.csv
-│       └── config.yaml    task: splice_simple; data.root: dod_data
+│       ├── task.py        @register_task("<task_name>"); rendered from a template (the
+│       │                  common case) or ToolSmith-generated; either way a complete,
+│       │                  self-contained BaseDownstreamModule subclass, version-stamped
+│       ├── datamodule.py  reads the sequence/label columns the spec named, from the file
+│       │                  path the spec named, and implements the approved split
+│       ├── config.yaml    task: <task_name>; data.root: the CSV's own path
+│       └── spec.json      the approved DatasetSpec this task landed with (§6) — read back
+│                          for reuse matching, serving notes/validators, and the doctor's
+│                          stale-template-version check
 └── tools/
     └── __init__.py        a docstring only — no external wrapper has been generated yet
 ```
@@ -226,10 +258,11 @@ This directory is **source code, not runtime state**: git-tracked, hand-editable
 silently regenerated — `pipeline._reject_existing` refuses to generate a task whose name
 already exists here.
 
-`splice_simple` is worth reading as the reference for what generated code looks like when
-it passes review: it declares its non-tensor `threshold` through
-`adapter_extra_payload()`/`load_adapter_extra()` (silent-failure question 1) and documents
-in a comment that its head consumes only the CLS token (question 2).
+A landed task is worth reading as the reference for what generated code looks like when it
+passes review: it declares any non-tensor state (a decision threshold, a class mapping)
+through `adapter_extra_payload()`/`load_adapter_extra()` (silent-failure question 1), and
+its `extract_features` makes explicit which token positions the head consumes (question 2)
+— both solved once, in the template, for the two declared target shapes that need them.
 
 Discovery is automatic — [`codegen/discovery.py`](../agentic/adaptrna_agentic/codegen/discovery.py)
 imports every `tasks/*/task.py` before training, serving or verification. A module that
@@ -280,11 +313,16 @@ root README embeds.
 | `toolhub_data/` | `Registry`, `staging` | `tools.json`, `adapters/<tool>.pt`, `staging/<stage_id>/adaptrna_custom/…` |
 | `jobs_data/` | `JobStore` | `jobs.json` |
 | `chat_data/` | `SqliteSaver` | `sessions.sqlite` (+ `-wal`, `-shm` under WAL mode) |
-| `dod_data/` | `agentic/scripts/make_demo_data.py` | `splice_simple_{train,val,test}.csv` — flat `sequence,label` CSVs no shipped task can read, which is exactly why the codegen flow exists |
 | `weights/`, `dataset/` | engine downloaders | `giga-v1.pt`; per-task dataset roots |
 
-Nine run directories exist in this checkout, spanning donor LoRA, donor full-FT,
-head-only, acceptor LoRA and four `splice_simple` runs — useful as real fixtures when
-working on the analyzer or the job store.
+`agentic/scripts/make_demo_data.py` regenerates the demo `sequence,label` CSV under
+`dod_data/` (default; `--out` overrides) for exercising the cold-start codegen flow, from a
+source fold directory you supply with `--source`.
+
+Ten run directories exist in this checkout — historical records of engine-CLI experiments
+that predate this phase (plan §15 keeps them: they are the analyzer's real fixtures, and
+`analyze_run` on one of them now takes the unknown-task baseline path rather than comparing
+against a reference band, which is accurate — the platform no longer knows what task
+produced them).
 
 On-disk schemas for `tools.json` and `jobs.json`: [configuration.md](configuration.md).
