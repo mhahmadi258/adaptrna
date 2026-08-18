@@ -19,7 +19,7 @@ import math
 
 from adaptrna_agentic.jobs.runner import latest_metrics_file
 from adaptrna_agentic.knowledge import arm as arm_knowledge
-from adaptrna_agentic.knowledge import task_knowledge_or_generic
+from adaptrna_agentic.knowledge import generic_knowledge
 
 VERDICT_OK = "ok"
 VERDICT_SUSPICIOUS = "suspicious"
@@ -68,15 +68,18 @@ def analyze_run(
         report["checks"].append("no task recorded — cannot compare against a reference")
         return report
 
-    knowledge = task_knowledge_or_generic(task)
-    # The plan recorded the primary metric when the run was planned, so a run stays
-    # analysable even if its task can no longer be imported (deleted, renamed, moved).
-    primary = knowledge["primary_metric"] or plan.get("primary_metric")
+    # Phase 13: there are no known tasks any more, so there is no per-task knowledge
+    # entry to look up — every run takes this generic path. The primary metric comes
+    # from the plan (which the recommender set from the approved spec's
+    # head.primary_metric), not from the knowledge base, so a run stays analysable even
+    # if its task can no longer be imported (deleted, renamed, moved).
+    knowledge = generic_knowledge()
+    primary = plan.get("primary_metric")
     if primary is None:
         report["verdict"] = VERDICT_SUSPICIOUS
         report["checks"].append(
-            f"'{task}' declares no primary metric and has no knowledge-base entry — "
-            f"the run's metrics are reported, but nothing judges them"
+            f"'{task}' has no primary metric recorded on its training plan — the run's "
+            f"metrics are reported, but nothing judges them"
         )
         return report
     value = metrics.get(primary)

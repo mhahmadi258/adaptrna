@@ -29,6 +29,16 @@ def _record(store, job_id, directory, task="generated_task", arm="lora", plan=No
     ))
 
 
+def _mock_band(monkeypatch, band, tolerance=1.0):
+    """A reference band no real DatasetSpec-driven run can produce any more (Phase 13),
+    kept reachable in tests so the comparison logic itself stays proven correct."""
+    import adaptrna_agentic.jobs.analysis as module
+
+    fake = {"reference": {"band": band, "tolerance": tolerance, "sources": ["test"]},
+            "caveats": []}
+    monkeypatch.setattr(module, "generic_knowledge", lambda: fake)
+
+
 @pytest.fixture
 def jobs(tmp_path, monkeypatch):
     monkeypatch.setenv("ADAPTRNA_JOBS_DIR", str(tmp_path / "jobs_data"))
@@ -71,8 +81,12 @@ def test_a_drop_below_the_baseline_is_flagged_but_named_as_a_baseline(jobs, tmp_
     assert "not a validated reference" in text
 
 
-def test_a_difference_inside_tolerance_is_not_a_regression(jobs, tmp_path):
-    """Run-to-run non-determinism must not read as a regression (MASTER_PLAN §7)."""
+def test_a_difference_inside_tolerance_is_not_a_regression(jobs, tmp_path, monkeypatch):
+    """Run-to-run non-determinism must not read as a regression (MASTER_PLAN §7).
+
+    No real DatasetSpec-driven task carries a reference band any more (Phase 13) -- the
+    band is mocked here so the comparison logic itself stays proven correct."""
+    _mock_band(monkeypatch, [95.8, 97.5], tolerance=1.0)
     _record(jobs, "older", _run_dir(tmp_path, "older", "96.5"), task="splice_site")
     directory = _run_dir(tmp_path, "newer", "95.8")
 
@@ -94,7 +108,8 @@ def test_truncated_runs_are_not_used_as_baselines(jobs, tmp_path):
     assert any("this run is the baseline" in c for c in report["checks"])
 
 
-def test_a_knowledge_base_band_still_wins_over_history(jobs, tmp_path):
+def test_a_knowledge_base_band_still_wins_over_history(jobs, tmp_path, monkeypatch):
+    _mock_band(monkeypatch, [95.8, 97.5], tolerance=1.0)
     _record(jobs, "older", _run_dir(tmp_path, "older", "99.0"), task="splice_site")
     directory = _run_dir(tmp_path, "newer", "96.5")
 

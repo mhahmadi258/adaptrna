@@ -42,36 +42,48 @@ def test_only_consequential_tools_are_gated():
     }
 
 
-def test_profile_and_recommend_round_trip(tools, tmp_path):
+def test_profile_confirm_and_recommend_round_trip(tools, tmp_path):
     # profile_dataset no longer matches a shipped task's on-disk layout (Phase 13) — it
-    # proposes a DatasetSpec from one flat table. recommend_training_config still needs
-    # an explicit `task` once there is no layout match to fall back on.
+    # proposes a DatasetSpec from one flat table, approved (here, unedited) through
+    # confirm_data_profile. recommend_training_config takes the approved spec directly,
+    # the same way it would for a task the human has not yet landed through
+    # create_task_tool + land_generated_code.
     built, _registry = tools
     path = tmp_path / "data.csv"
     path.write_text(
-        "sequence,label\n" + "\n".join(f"{'ACGT' * 100},{i % 2}" for i in range(10)) + "\n"
+        "sequence,label\n" + "\n".join(f"{'ACGT' * 100},{i % 2}" for i in range(40)) + "\n"
     )
 
     profile = built["profile_dataset"].invoke({"path": str(path)})
     assert profile["target_type"] == "binary"
     assert profile["sequence_column"] == "sequence"
 
+    spec = built["confirm_data_profile"].invoke({"spec": profile})
+
     plan = built["recommend_training_config"].invoke({
-        "data_path": str(path), "task": "splice_site",
+        "task": spec["task_name"], "spec": spec,
     })
     assert plan["overrides"]["optim.lr"] == pytest.approx(3.0e-4)
+    assert plan["overrides"]["data.root"] == spec["path"]
     assert plan["command"][1:3] == ["-m", "adaptrna_agentic.jobs.train_entrypoint"]
 
 
-def test_recommend_on_unmatched_data_returns_the_refusal_as_a_result(tools, tmp_path):
+def test_recommend_with_no_task_returns_the_refusal_as_a_result(tools):
     built, _registry = tools
-    path = tmp_path / "mystery.csv"
-    path.write_text("sequence,affinity\n" + "\n".join(f"{'ACGT' * 15},{i}" for i in range(20)))
 
-    result = built["recommend_training_config"].invoke({"data_path": str(path)})
+    result = built["recommend_training_config"].invoke({"task": ""})
 
     assert isinstance(result, str)                    # ToolException -> tool result
-    assert "nothing to train yet" in result
+    assert "no task to train yet" in result
+
+
+def test_recommend_for_an_unlanded_task_returns_the_refusal_as_a_result(tools):
+    built, _registry = tools
+
+    result = built["recommend_training_config"].invoke({"task": "never_landed"})
+
+    assert isinstance(result, str)
+    assert "No dataset spec found" in result
 
 
 def _finished_job(tmp_path, built, adapter_source):
@@ -97,6 +109,7 @@ def _finished_job(tmp_path, built, adapter_source):
         "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir), str(adapter_source)],
         "overrides": {}, "estimated_wall_clock": "~7 min", "warnings": [],
+        "primary_metric": "test/f1_score",
     }
 
     result = built["start_training"].invoke({"plan": plan})

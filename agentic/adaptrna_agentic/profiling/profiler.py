@@ -53,33 +53,31 @@ _SPLIT_NAME_HINTS = {
 
 _TASK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-#: One entry per supported target type — the recipe `DatasetSpec.head` is filled from.
-#: Duplicated (deliberately, for now) with the same three recipes baked into
-#: `codegen/templates/task.py.j2`; Phase 13 §6's `target_shapes.yaml` (Stage 3) becomes
-#: the single source of truth for both, but the profiler must not block on it existing.
-_TARGET_RECIPES = {
-    "binary": {
-        "kind": "cls_classifier",
-        "loss": "binary_cross_entropy_with_logits",
-        "metrics": ["acc", "precision", "recall", "f1_score"],
-        "primary_metric": "test/f1_score",
-        "pad_sensitive": False,
-    },
-    "multiclass": {
-        "kind": "cls_classifier",
-        "loss": "cross_entropy",
-        "metrics": ["acc", "macro_f1"],
-        "primary_metric": "test/macro_f1",
-        "pad_sensitive": False,
-    },
-    "regression": {
-        "kind": "pooled_regressor",
-        "loss": "mse",
-        "metrics": ["r2", "mse", "mae"],
-        "primary_metric": "test/mse",
-        "pad_sensitive": True,
-    },
+#: `DatasetSpec.head.kind` — a coarse categorisation `target_shapes.yaml` itself does not
+#: carry (its "head" field is prose, e.g. "one linear layer on the CLS-token
+#: representation"), used only for display.
+_HEAD_KIND = {
+    "binary": "cls_classifier",
+    "multiclass": "cls_classifier",
+    "regression": "pooled_regressor",
 }
+
+_SUPPORTED_TARGET_TYPES = ("binary", "multiclass", "regression")
+
+
+def _head_from_target_shape(target_type: str) -> Dict[str, Any]:
+    """`DatasetSpec.head`, filled from `knowledge.target_shape()` — the loss, metrics and
+    primary metric are never chosen by the model, only by this recipe table (plan §3)."""
+    from adaptrna_agentic.knowledge import target_shape
+
+    shape = target_shape(target_type)
+    return {
+        "kind": _HEAD_KIND[target_type],
+        "loss": shape["loss"],
+        "metrics": list(shape["metrics"]),
+        "primary_metric": shape["primary_metric"],
+        "pad_sensitive": shape["pad_sensitive"],
+    }
 
 _UNSUPPORTED_INPUT = (
     "This build trains from a single table (.csv/.tsv, optionally gzipped) containing "
@@ -173,7 +171,7 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
         "split_candidates": split_candidates,
         "task_name": _default_task_name(path),
         "tool_description": _default_description(target_type, path),
-        "head": dict(_TARGET_RECIPES[target_type]),
+        "head": _head_from_target_shape(target_type),
     }
     spec["warnings"] = _quality_warnings(frame, sequence_column, sequences, class_counts, split)
 
@@ -221,7 +219,7 @@ def confirm_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
         raise ToolHubError("sequence_column and label_column must be different columns.")
 
     target_type = spec.get("target_type")
-    if target_type not in _TARGET_RECIPES:
+    if target_type not in _SUPPORTED_TARGET_TYPES:
         raise ToolHubError(
             f"'{target_type}' is not a supported target type. This build trains binary, "
             f"multiclass or regression targets from one sequence+label table."
@@ -273,7 +271,7 @@ def confirm_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
         "split": split,
         "task_name": task_name,
         "tool_description": spec.get("tool_description") or _default_description(target_type, path),
-        "head": dict(_TARGET_RECIPES[target_type]),
+        "head": _head_from_target_shape(target_type),
     })
     spec["warnings"] = _quality_warnings(frame, sequence_column, sequences, class_counts, split)
 

@@ -1,0 +1,49 @@
+# Target-type recipes: what to build, keyed by the label shape a table can hold.
+#
+# Replaces task_templates.yaml (Phase 13). Three entries, carrying no task identity, no
+# dataset layout and no required_paths — there is nothing left to match against. Every
+# DatasetSpec's `head` is filled from here (profiler.py at proposal and re-approval;
+# codegen/templates/ mirrors the same loss/metrics in code, independently written but
+# describing the same recipe).
+
+target_shapes:
+  binary:
+    label: Binary sequence classification
+    head: "one linear layer on the CLS-token representation -> a single logit"
+    extract_features: "representation[:, 0]   # CLS only; EOS and padding never reach the head"
+    loss: binary_cross_entropy_with_logits
+    metrics: [acc, precision, recall, f1_score]
+    primary_metric: test/f1_score
+    predict_output: "one probability per sequence — of the spec's positive_class"
+    pad_sensitive: false
+    adapter_state: "classes and positive_class decide what a prediction MEANS (which
+                    number is 'positive') and MUST travel via
+                    adapter_extra_payload()/load_adapter_extra(), or a reloaded adapter
+                    silently inverts every prediction. If the task also keeps a decision
+                    threshold, that is a plain Python value and travels the same way."
+
+  multiclass:
+    label: Multiclass sequence classification
+    head: "one linear layer on the CLS-token representation -> n_classes logits"
+    extract_features: "representation[:, 0]"
+    loss: cross_entropy
+    metrics: [acc, macro_f1]
+    primary_metric: test/macro_f1
+    predict_output: "one class label plus per-class probabilities per sequence"
+    pad_sensitive: false
+    adapter_state: "The class-index -> class-label mapping decides what a prediction MEANS
+                    and MUST travel via adapter_extra_payload()/load_adapter_extra(), or a
+                    reloaded adapter silently relabels every prediction."
+
+  regression:
+    label: Sequence regression
+    head: "pooled representation -> an MLP producing one scalar"
+    extract_features: "mask padded positions, then mean-pool; pass (representation, pad_mask)"
+    loss: mse
+    metrics: [r2, mse, mae]
+    primary_metric: test/r2
+    predict_output: "one predicted value per sequence, in the original target scale"
+    pad_sensitive: true
+    adapter_state: "A target scaler fitted on the training split MUST be registered as a
+                    buffer whose prefix is in ADAPTER_EXTRA_PREFIXES; predictions depend
+                    on it and it is not a head weight."

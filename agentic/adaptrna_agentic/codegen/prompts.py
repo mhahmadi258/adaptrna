@@ -1,15 +1,20 @@
 """Context assembly for ToolSmith and Verifier.
 
 Everything here already exists somewhere in the project — the engine's subclass contract,
-its worked example, the task templates from the knowledge base, the external-tool
-contract. This module's only job is to put the right pieces in front of the right agent.
+its worked example, the external-tool contract. This module's only job is to put the
+right pieces in front of the right agent.
+
+Phase 13: the platform ships no task definitions, so there is no "closest known task
+shape" to show the generator any more (D6) — Stage 4 of that phase replaces it with a
+spec-driven recipe section and re-points the worked example at the deterministic
+template's own output. Until then this module still targets the pre-Phase-13 flow
+(profile + name/description in, not an approved DatasetSpec).
 """
 
 from pathlib import Path
 from typing import Any, Dict, Optional
 import json
 
-from adaptrna_agentic.knowledge import load_knowledge, templates
 from adaptrna_agentic.settings import REPO_ROOT
 
 EXAMPLE_DIR = REPO_ROOT / "engine" / "examples" / "ncrna_classification"
@@ -101,26 +106,6 @@ def worked_example() -> str:
     return "\n\n".join(blocks)
 
 
-def template_for_profile(profile: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The task template whose shape best matches this data."""
-    target_type = profile.get("target_type")
-    median = profile.get("length_median")
-
-    best, best_score = None, 0.0
-    for template in templates():
-        match = template["match"]
-        score = 0.0
-        if match.get("target_type") == target_type:
-            score += 2.0
-        if median is not None and "typical_length" in match:
-            typical = match["typical_length"]
-            score += max(0.0, 1.0 - abs(median - typical) / max(typical, 1))
-        if score > best_score:
-            best, best_score = template, score
-
-    return best
-
-
 def task_system_prompt() -> str:
     return (
         "You write new tasks for the AdaptRNA fine-tuning engine. A task is exactly three "
@@ -137,19 +122,10 @@ def task_user_prompt(
     profile: Dict[str, Any],
     feedback: Optional[str] = None,
 ) -> str:
-    template = template_for_profile(profile)
     sections = [
         f"# Task to build\n\nName: `{task_name}`\nWhat the user wants: {description}",
         f"# The data\n\n```json\n{json.dumps(profile, indent=2, default=str)}\n```",
     ]
-
-    if template:
-        sections.append(
-            "# Closest known task shape\n\n"
-            f"```json\n{json.dumps(template, indent=2, default=str)}\n```\n"
-            "Use its head/loss/metrics/extract_features pattern unless the data calls "
-            "for something different."
-        )
 
     sections += [
         f"# The engine's subclass contract\n\n```\n{SUBCLASS_CONTRACT}\n```",

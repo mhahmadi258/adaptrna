@@ -1,11 +1,19 @@
-"""ConfigRecommender: table-driven, no free-floating constants, and — the strongest
-cheap guarantee — the command it materialises parses under the engine's own CLI."""
+"""ConfigRecommender: table-driven, no free-floating constants, derived (not invented)
+values for whatever cannot transfer across datasets, and — the strongest cheap
+guarantee — the command it materialises parses under the engine's own CLI.
+
+Phase 13: there are no known tasks any more, so `recommend()` takes a task name plus the
+DatasetSpec it derives batch size and epoch count from (either passed directly, or read
+from the task's own landed `spec.json`) — never a profile matched against a shipped
+task's layout.
+"""
+
+import json
 
 import pytest
 
 from adaptrna_agentic.knowledge import arm as arm_knowledge
-from adaptrna_agentic.knowledge import task_knowledge
-from adaptrna_agentic.profiling.recommender import build_command, recommend
+from adaptrna_agentic.profiling.recommender import PLAN_SOURCE, build_command, recommend
 from adaptrna_agentic.toolhub.errors import ToolHubError
 
 
@@ -31,32 +39,29 @@ def _default_registry(registry, monkeypatch):
                         lambda reg=None: (reg or registry).manifest.backbone)
 
 
-@pytest.fixture
-def splice_profile(tmp_path):
-    root = tmp_path / "train_data"
-    (root / "GS_1" / "db_1").mkdir(parents=True)
-    (tmp_path / "test_data").mkdir()
-    return {"path": str(root), "layout_match": "splice_site",
-            "target_type": "binary", "length_median": 400}
-
-
-@pytest.fixture
-def mrl_profile(tmp_path):
-    root = tmp_path / "mrl_data"
-    root.mkdir()
-    return {"path": str(root), "layout_match": "mrl",
-            "target_type": "continuous", "length_median": 50}
+def _spec(**overrides):
+    spec = {
+        "path": "/data/donor_sites.csv",
+        "target_type": "binary",
+        "length": {"min": 380, "median": 400, "max": 420},
+        "split": {"row_counts": {"train": 19350, "val": 2419, "test": 2419}},
+        "head": {"primary_metric": "test/f1_score"},
+    }
+    spec.update(overrides)
+    return spec
 
 
 def _overrides(plan):
     return plan["overrides"]
 
 
-def test_splice_site_lora_uses_validated_settings(splice_profile):
-    plan = recommend(splice_profile)
+# ---------------------------------------------------------------------- arm settings
+
+def test_lora_uses_validated_settings():
+    plan = recommend("donor_sites", spec=_spec())
     overrides = _overrides(plan)
 
-    assert plan["task"] == "splice_site"
+    assert plan["task"] == "donor_sites"
     assert plan["arm"] == "lora"
     assert overrides["optim.lr"] == pytest.approx(3.0e-4)
     assert overrides["trainer.gradient_clip_val"] == 1.0
@@ -65,27 +70,9 @@ def test_splice_site_lora_uses_validated_settings(splice_profile):
     assert plan["primary_metric"] == "test/f1_score"
 
 
-def test_acceptor_arm_is_honored(splice_profile):
-    plan = recommend(splice_profile, task_options={"ss_type": "acceptor"})
-
-    assert _overrides(plan)["data.ss_type"] == "acceptor"
-    assert "acceptor" in plan["output_dir"]
-
-
-def test_invalid_task_option_rejected(splice_profile):
-    with pytest.raises(ToolHubError, match="not a valid data.ss_type"):
-        recommend(splice_profile, task_options={"ss_type": "banana"})
-
-
-def test_splice_test_root_points_at_the_benchmark_species(splice_profile):
-    overrides = _overrides(recommend(splice_profile))
-
-    assert overrides["data.test_root"].endswith("test_data")
-
-
-def test_every_recommended_number_comes_from_the_knowledge_base(splice_profile):
+def test_every_recommended_arm_number_comes_from_the_knowledge_base():
     """No free-floating constants: the arm's settings must match the YAML exactly."""
-    overrides = _overrides(recommend(splice_profile))
+    overrides = _overrides(recommend("donor_sites", spec=_spec()))
     lora = arm_knowledge("lora")
 
     assert overrides["optim.lr"] == lora["optim"]["lr"]
@@ -95,42 +82,84 @@ def test_every_recommended_number_comes_from_the_knowledge_base(splice_profile):
         assert overrides[f"lora.{key}"] == value
 
 
-def test_rationale_carries_the_collapse_story(splice_profile):
-    rationale = " ".join(recommend(splice_profile)["rationale"])
+def test_rationale_carries_the_collapse_story():
+    rationale = " ".join(recommend("donor_sites", spec=_spec())["rationale"])
 
     assert "1e-3" in rationale
     assert "constant-output" in rationale
 
 
-def test_mrl_random7600_warning_emitted(mrl_profile):
-    warnings = " ".join(recommend(mrl_profile)["warnings"])
+def test_full_ft_warns_that_it_cannot_become_a_tool():
+    plan = recommend("donor_sites", spec=_spec(), arm="full_ft")
 
-    assert "random7600" in warnings
-    assert "holdout" in warnings
+    assert _overrides(plan)["optim.lr"] == pytest.approx(1.0e-5)
+    assert "--use_lora" not in plan["command"]
+    assert any("cannot become served tools" in w for w in plan["warnings"])
 
 
-def test_no_early_stopping_is_ever_proposed(splice_profile, mrl_profile):
+# ---------------------------------------------------------------------- data.root
+
+def test_data_root_is_the_spec_file_not_a_directory():
+    plan = recommend("donor_sites", spec=_spec(path="/data/donor_sites.csv"))
+
+    assert _overrides(plan)["data.root"] == "/data/donor_sites.csv"
+
+
+# ---------------------------------------------------------------------- derived values
+
+def test_derived_batch_size_is_wired_into_overrides_and_rationale():
+    plan = recommend("donor_sites", spec=_spec())
+
+    assert _overrides(plan)["data.batch_size"] == 32   # median 400 nt
+    assert any("data.batch_size 32" in line for line in plan["rationale"])
+
+
+def test_derived_max_epochs_is_wired_into_overrides_and_rationale():
+    plan = recommend("donor_sites", spec=_spec())
+
+    epochs = _overrides(plan)["trainer.max_epochs"]
+    assert any(f"trainer.max_epochs {epochs}" in line for line in plan["rationale"])
+
+
+def test_derived_num_workers():
+    plan = recommend("donor_sites", spec=_spec())
+
+    assert _overrides(plan)["data.num_workers"] == 8
+
+
+def test_no_reference_band_and_baseline_caveat():
+    """There are no known tasks any more; a band is a property of a task and a dataset
+    and cannot be invented."""
+    plan = recommend("donor_sites", spec=_spec())
+
+    assert plan["reference"]["band"] is None
+    assert any("baseline" in w for w in plan["warnings"])
+
+
+def test_estimated_wall_clock_is_honest_about_being_unknown():
+    plan = recommend("donor_sites", spec=_spec())
+
+    assert "unknown" in plan["estimated_wall_clock"]
+
+
+# ---------------------------------------------------------------------- refusals
+
+def test_no_early_stopping_is_ever_proposed():
     """Nothing may select on validation (MASTER_PLAN §7): checked on the *config*, not
-    the prose — the MRL caveat mentions early stopping precisely to warn against it."""
-    for profile in (splice_profile, mrl_profile):
-        plan = recommend(profile)
+    the prose."""
+    plan = recommend("donor_sites", spec=_spec())
 
-        # Config KEYS only — values carry filesystem paths, and pytest's tmp dirs are
-        # named after the test, so scanning values would match this test's own name.
-        keys = set(_overrides(plan))
-        command_keys = {
-            plan["command"][i + 1].partition("=")[0]
-            for i, token in enumerate(plan["command"]) if token == "--set"
-        }
-
-        for forbidden in ("early_stopping", "monitor"):
-            assert not any(forbidden in key for key in keys | command_keys)
-
-        assert _overrides(plan).get("trainer.checkpoint_every_epoch") in (None, False)
+    keys = set(_overrides(plan))
+    command_keys = {
+        plan["command"][i + 1].partition("=")[0]
+        for i, token in enumerate(plan["command"]) if token == "--set"
+    }
+    for forbidden in ("early_stopping", "monitor"):
+        assert not any(forbidden in key for key in keys | command_keys)
 
 
-def test_quick_run_truncates_and_warns(splice_profile):
-    plan = recommend(splice_profile, quick=True)
+def test_quick_run_truncates_and_warns():
+    plan = recommend("donor_sites", spec=_spec(), quick=True)
 
     assert plan["quick_run"] is True
     assert _overrides(plan)["trainer.max_steps"] == 200
@@ -138,49 +167,82 @@ def test_quick_run_truncates_and_warns(splice_profile):
     assert "truncated" in plan["estimated_wall_clock"]
 
 
-def test_full_ft_warns_that_it_cannot_become_a_tool(splice_profile):
-    plan = recommend(splice_profile, arm="full_ft")
-
-    assert _overrides(plan)["optim.lr"] == pytest.approx(1.0e-5)
-    assert "--use_lora" not in plan["command"]
-    assert any("cannot become served tools" in w for w in plan["warnings"])
+def test_missing_task_refuses_with_the_new_flow():
+    with pytest.raises(ToolHubError, match="Approve a dataset spec"):
+        recommend("", spec=_spec())
 
 
-def test_eta_comes_from_the_knowledge_base(splice_profile):
-    plan = recommend(splice_profile)
+def test_missing_spec_and_no_landed_task_refuses(tmp_path, monkeypatch):
+    from adaptrna_agentic.codegen import discovery
 
-    assert plan["estimated_wall_clock"] == task_knowledge("splice_site")["wall_clock"]["reference"]
+    monkeypatch.setattr(discovery, "CUSTOM_ROOT", tmp_path)
 
-
-def test_unmatched_profile_refuses_with_the_reason():
-    profile = {"path": "/tmp", "layout_match": None,
-               "layout_reason": "No shipped task reads this layout."}
-
-    with pytest.raises(ToolHubError, match="nothing to train yet"):
-        recommend(profile)
+    with pytest.raises(ToolHubError, match="No dataset spec found"):
+        recommend("nonexistent_task")
 
 
-# ---------------------------------------------------------------- executability
+# ---------------------------------------------------------------------- landed spec.json
 
-def test_command_parses_under_the_engine_cli(splice_profile):
+def test_spec_is_read_from_the_landed_task_when_not_passed(tmp_path, monkeypatch):
+    from adaptrna_agentic.codegen import discovery
+
+    monkeypatch.setattr(discovery, "CUSTOM_ROOT", tmp_path)
+    task_dir = tmp_path / "tasks" / "donor_sites"
+    task_dir.mkdir(parents=True)
+    (task_dir / "spec.json").write_text(json.dumps(_spec()))
+
+    plan = recommend("donor_sites")
+
+    assert _overrides(plan)["data.batch_size"] == 32
+
+
+def test_a_spec_passed_explicitly_overrides_data_root_for_reuse(tmp_path, monkeypatch):
+    """Reuse (plan §9): recommending against an already-landed task, pointed at a new
+    file of the same shape — the code is not regenerated, only data.root changes."""
+    from adaptrna_agentic.codegen import discovery
+
+    monkeypatch.setattr(discovery, "CUSTOM_ROOT", tmp_path)
+    task_dir = tmp_path / "tasks" / "donor_sites"
+    task_dir.mkdir(parents=True)
+    (task_dir / "spec.json").write_text(json.dumps(_spec(path="/data/original.csv")))
+
+    plan = recommend("donor_sites", spec=_spec(path="/data/new_file.csv"))
+
+    assert _overrides(plan)["data.root"] == "/data/new_file.csv"
+
+
+def test_an_unreadable_landed_spec_is_treated_as_absent_not_an_error(tmp_path, monkeypatch):
+    from adaptrna_agentic.codegen import discovery
+
+    monkeypatch.setattr(discovery, "CUSTOM_ROOT", tmp_path)
+    task_dir = tmp_path / "tasks" / "donor_sites"
+    task_dir.mkdir(parents=True)
+    (task_dir / "spec.json").write_text("not valid json{{{")
+
+    with pytest.raises(ToolHubError, match="No dataset spec found"):
+        recommend("donor_sites")
+
+
+# ---------------------------------------------------------------------- executability
+
+def test_command_parses_under_the_engine_cli():
     """The plan must be executable: its command line has to satisfy the engine's own
     argument parser before anyone is asked to approve it."""
     from rinalmo_hub.cli.train import build_parser
 
-    command = recommend(splice_profile, task_options={"ss_type": "acceptor"})["command"]
+    command = recommend("donor_sites", spec=_spec())["command"]
 
     assert command[1:3] == ["-m", "adaptrna_agentic.jobs.train_entrypoint"]
     args = build_parser().parse_args(command[3:])       # drop python -m <module>
 
-    assert args.task == "splice_site"
+    assert args.task == "donor_sites"
     assert args.use_lora is True
-    assert any(override.startswith("data.ss_type=") for override in args.overrides)
 
 
-def test_command_renders_overrides_the_engine_can_parse(splice_profile):
+def test_command_renders_overrides_the_engine_can_parse():
     from rinalmo_hub.config import parse_scalar
 
-    plan = recommend(splice_profile, quick=True)
+    plan = recommend("donor_sites", spec=_spec(), quick=True)
     rendered = {}
     for i, token in enumerate(plan["command"]):
         if token == "--set":
@@ -193,70 +255,54 @@ def test_command_renders_overrides_the_engine_can_parse(splice_profile):
     assert rendered["lora.layer_stride"] == 3
 
 
-def test_build_command_is_pure(splice_profile):
-    plan = recommend(splice_profile)
+def test_build_command_is_pure():
+    plan = recommend("donor_sites", spec=_spec())
 
     assert build_command(plan) == plan["command"]
 
 
-# ---------------------------------------------------------------- backbone
+# ---------------------------------------------------------------------- backbone
 
-def test_plan_trains_against_the_hub_backbone(splice_profile, registry, tmp_path):
+def test_plan_trains_against_the_hub_backbone(registry, tmp_path):
     """The engine defaults to `weights/giga-v1.pt` relative to the CWD; the plan must
     instead name the checkpoint the ToolHub actually serves."""
-    plan = recommend(splice_profile, registry=registry)
+    plan = recommend("donor_sites", spec=_spec(), registry=registry)
 
-    assert plan["overrides"]["pretrained_weights"] == str(tmp_path / "giga-v1.pt")
-    assert plan["overrides"]["lm_config"] == "giga"
+    assert _overrides(plan)["pretrained_weights"] == str(tmp_path / "giga-v1.pt")
+    assert _overrides(plan)["lm_config"] == "giga"
     assert any("could not be served alongside" in line for line in plan["rationale"])
 
 
-def test_missing_checkpoint_refuses_with_the_fix(splice_profile, registry):
+def test_missing_checkpoint_refuses_with_the_fix(registry):
     registry.configure_backbone(weights="nowhere/giga-v1.pt")
 
     with pytest.raises(ToolHubError, match="toolhub config --weights"):
-        recommend(splice_profile, registry=registry)
+        recommend("donor_sites", spec=_spec(), registry=registry)
 
 
-def test_hub_without_weights_warns_about_a_random_backbone(splice_profile, registry):
+def test_hub_without_weights_warns_about_a_random_backbone(registry):
     registry.configure_backbone(weights="null")
 
-    plan = recommend(splice_profile, registry=registry)
+    plan = recommend("donor_sites", spec=_spec(), registry=registry)
 
-    assert plan["overrides"]["pretrained_weights"] == "null"
+    assert _overrides(plan)["pretrained_weights"] == "null"
     assert any("randomly initialised backbone" in w for w in plan["warnings"])
 
 
-# ---------------------------------------------------------------- generated tasks
+# ---------------------------------------------------------------------- config path
 
-def test_unknown_task_uses_validated_arm_settings_but_no_reference_band(
-    splice_profile, registry, monkeypatch
-):
-    """A generated task has no knowledge entry. Arm settings transfer across tasks;
-    a reference metric band does not, and must not be invented."""
+def test_config_path_points_at_the_landed_tasks_own_package(tmp_path, monkeypatch):
     import adaptrna_agentic.profiling.recommender as module
 
-    monkeypatch.setattr(module, "_config_path", lambda task: f"adaptrna_custom/tasks/{task}/config.yaml")
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    package = tmp_path / "adaptrna_custom" / "tasks" / "donor_sites"
+    package.mkdir(parents=True)
+    (package / "config.yaml").write_text("task: donor_sites\n")
 
-    plan = recommend(splice_profile, task="brand_new_task", registry=registry)
+    plan = recommend("donor_sites", spec=_spec())
 
-    assert plan["overrides"]["optim.lr"] == pytest.approx(3.0e-4)     # validated, transfers
-    assert plan["overrides"]["trainer.gradient_clip_val"] == 1.0
-    assert plan["reference"]["band"] is None                          # not invented
-    assert any("not in the knowledge base" in w for w in plan["warnings"])
-    assert any("baseline" in w for w in plan["warnings"])
-
-
-def test_generated_task_config_path_points_at_its_own_package(splice_profile, registry, monkeypatch):
-    import adaptrna_agentic.profiling.recommender as module
-
-    monkeypatch.setattr(module, "_config_path", lambda task: f"adaptrna_custom/tasks/{task}/config.yaml")
-    plan = recommend(splice_profile, task="generated_thing", registry=registry)
-
-    assert plan["config_path"] == "adaptrna_custom/tasks/generated_thing/config.yaml"
+    assert plan["config_path"] == "adaptrna_custom/tasks/donor_sites/config.yaml"
 
 
-def test_every_plan_is_stamped_with_its_source(splice_profile, registry):
-    from adaptrna_agentic.profiling.recommender import PLAN_SOURCE
-
-    assert recommend(splice_profile, registry=registry)["source"] == PLAN_SOURCE
+def test_every_plan_is_stamped_with_its_source():
+    assert recommend("donor_sites", spec=_spec())["source"] == PLAN_SOURCE

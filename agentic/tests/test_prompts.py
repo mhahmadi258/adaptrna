@@ -28,28 +28,6 @@ def test_task_prompt_carries_everything_the_generator_needs():
     assert "adaptrna_custom.tasks.<task_name>.datamodule" in text
 
 
-def test_binary_profile_selects_the_classification_template():
-    template = prompts.template_for_profile(PROFILE)
-
-    assert template["task"] == "splice_site"
-    assert "CLS" in template["shape"]["extract_features"]
-
-
-def test_continuous_profile_selects_the_regression_template():
-    template = prompts.template_for_profile(
-        {"target_type": "continuous", "length_median": 50}
-    )
-
-    assert template["task"] == "mrl"
-
-
-def test_selected_template_is_included_in_the_prompt():
-    text = prompts.task_user_prompt("t", "d", PROFILE)
-
-    assert "Closest known task shape" in text
-    assert "SpliceSitePredictionHead" in text
-
-
 def test_feedback_is_appended_for_a_retry():
     text = prompts.task_user_prompt("t", "d", PROFILE, feedback="round trip failed")
 

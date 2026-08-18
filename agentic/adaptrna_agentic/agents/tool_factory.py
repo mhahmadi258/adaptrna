@@ -205,23 +205,24 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
         return _confirm_profile(spec)
 
     def recommend_training_config(
-        data_path: str,
-        task: Optional[str] = None,
+        task: str,
+        spec: Optional[dict] = None,
         arm: str = "lora",
         quick: bool = False,
         seed: int = 42,
-        task_options: Optional[dict] = None,
     ) -> dict:
-        """Propose a validated training plan for a dataset.
+        """Propose a validated training plan for a landed task.
 
-        Returns the task, arm, config overrides, the exact command, an ETA, the rationale
-        behind every setting, and any caveats. All values come from the project's
-        knowledge base of validated runs — never invent hyperparameters yourself.
+        Batch size and epoch count are derived from the spec the task landed with
+        (adaptrna_custom/tasks/<task>/spec.json); pass spec explicitly only to point an
+        existing task at a new file of the same shape (reuse — data.root changes, the
+        code does not). Returns the task, arm, config overrides, the exact command, an
+        ETA, the rationale behind every setting, and any caveats. All values come from
+        the project's knowledge base of validated runs — never invent hyperparameters
+        yourself.
         """
-        profile = _profile_dataset(data_path)
         return _recommend(
-            profile, task=task, arm=arm, quick=quick, seed=seed,
-            task_options=task_options, registry=registry,
+            task, spec=spec, arm=arm, quick=quick, seed=seed, registry=registry,
         )
 
     def start_training(plan: dict) -> dict:
