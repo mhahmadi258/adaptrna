@@ -217,3 +217,18 @@ def task_with_bad_extract_features(task_name: str) -> str:
 
 
 BAD_DATAMODULE = GOOD_DATAMODULE.replace('row["sequence"]', 'row["seq"]')
+
+
+def drop_adapter_extra_prefix(task_source: str, prefix_tuple_literal: str) -> str:
+    """Strip a declared `ADAPTER_EXTRA_PREFIXES` entry from otherwise-good task source,
+    leaving the state itself (buffers, etc.) in place but undeclared.
+
+    Works on any task source that declares the prefix verbatim -- template-rendered or
+    hand-written -- so it doubles as the catch for check 6 (`adapter_roundtrip`) wherever
+    a task carries real adapter-owned state, not just the synthetic `_TASK_TEMPLATE` above.
+    """
+    original = f"ADAPTER_EXTRA_PREFIXES = {prefix_tuple_literal}"
+    broken = "ADAPTER_EXTRA_PREFIXES = ()"
+    if original not in task_source:
+        raise ValueError(f"expected to find {original!r} in the task source")
+    return task_source.replace(original, broken)

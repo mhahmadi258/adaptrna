@@ -1,4 +1,4 @@
-# rendered by adaptrna template v1 from spec.json
+# rendered by adaptrna template v2 from spec.json
 """multiclass target from a flat sequence/label table"""
 
 import torch
@@ -61,7 +61,32 @@ class MulticlassColumnModule(BaseDownstreamModule):
                 for name, metric in self.metrics[stage].items()}
 
     def postprocess_predictions(self, outputs, tokens, sequences):
-        return outputs.float().argmax(dim=-1)
+        probs = torch.softmax(outputs.float(), dim=-1)
+        predictions = []
+        for row in probs.tolist():
+            index = max(range(len(row)), key=row.__getitem__)
+            predictions.append({
+                "label": CLASSES[index],
+                "probabilities": dict(zip(CLASSES, row)),
+            })
+        return predictions
+
+    def adapter_extra_payload(self) -> dict:
+        # The class order (and, for binary, which class is positive) decides what a
+        # prediction MEANS. Ship it in the adapter file so a reload can check itself
+        # against it rather than silently relabelling.
+        return {"classes": CLASSES}
+
+    def load_adapter_extra(self, extra: dict) -> None:
+        if not extra:
+            return  # tolerate an older adapter that predates this payload
+
+        if extra.get("classes") != CLASSES:
+            raise ValueError(
+                f"This adapter was saved with classes {extra.get('classes')}, but the "
+                f"loaded module defines CLASSES = {CLASSES}. Loading it would silently "
+                f"relabel every prediction."
+            )
 
     @staticmethod
     def build_datamodule(cfg):

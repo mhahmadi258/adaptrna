@@ -1,10 +1,11 @@
-# rendered by adaptrna template v1 from spec.json
+# rendered by adaptrna template v2 from spec.json
 """CSV/TSV datamodule for 'binary_random', rendered from the approved dataset spec.
 
 Reads exactly the sequence and label columns approved at gate 1, from whatever path
 `data.root` in the config names -- so pointing this task at a new file of the same shape
 (same columns, same split policy) works without regenerating any code. Implements exactly
-the approved split policy: no re-shuffling, no second seed.
+the approved split policy: no re-shuffling, no second seed. Sequences are padded per batch
+(not to the dataset-wide maximum), so one long outlier does not inflate every batch.
 """
 
 import re
@@ -20,7 +21,7 @@ SEPARATOR = ','
 COMPRESSION = None
 ON_INVALID = 'fail'
 CLASSES = ['0', '1']
-CLASS_INDEX = {value: index for index, value in enumerate(CLASSES)}
+POSITIVE_CLASS = '0'
 KEEP_COLUMNS = [SEQUENCE_COLUMN, LABEL_COLUMN]
 
 _VALID_SEQUENCE = re.compile(r"^[ACGTUNacgtun]+$")
@@ -79,11 +80,31 @@ def _split(frame):
     return train_frame, val_frame, test_frame
 
 
+def _validate_split(train_frame, val_frame, test_frame):
+    fractions = {'train': 0.8, 'val': 0.1, 'test': 0.1}
+
+    empty = []
+    if len(train_frame) == 0:
+        empty.append("train")
+    if fractions["val"] > 0 and len(val_frame) == 0:
+        empty.append("val")
+    if fractions["test"] > 0 and len(test_frame) == 0:
+        empty.append("test")
+
+    if empty:
+        raise ValueError(
+            f"the {', '.join(empty)} split is empty after splitting with fractions "
+            f"{fractions} (seed 42) -- there is not enough data for this "
+            f"split policy."
+        )
+
+
 class SequenceDataset(Dataset):
-    def __init__(self, frame, alphabet, pad_to_len):
+    """Tokens are left unpadded here; the datamodule's collate_fn pads per batch."""
+
+    def __init__(self, frame, alphabet):
         self.frame = frame.reset_index(drop=True)
         self.alphabet = alphabet
-        self.pad_to_len = pad_to_len
 
     def __len__(self):
         return len(self.frame)
@@ -91,10 +112,12 @@ class SequenceDataset(Dataset):
     def __getitem__(self, index):
         row = self.frame.iloc[index]
         tokens = torch.tensor(
-            self.alphabet.encode(row[SEQUENCE_COLUMN], pad_to_len=self.pad_to_len),
-            dtype=torch.long,
+            self.alphabet.encode(row[SEQUENCE_COLUMN]), dtype=torch.long
         )
-        label = torch.tensor(float(CLASS_INDEX[str(row[LABEL_COLUMN])]), dtype=torch.float32)
+        value = str(row[LABEL_COLUMN])
+        if value not in CLASSES:
+            raise ValueError(f"label value {value!r} is not one of the approved classes {CLASSES}")
+        label = torch.tensor(1.0 if value == POSITIVE_CLASS else 0.0, dtype=torch.float32)
         return tokens, label
 
 
@@ -110,20 +133,31 @@ class CsvDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         frame = _read_frame(self.data_root)
         train_frame, val_frame, test_frame = _split(frame)
+        _validate_split(train_frame, val_frame, test_frame)
 
-        pad_to_len = max(len(s) for s in frame[SEQUENCE_COLUMN]) + 2
-        self.train_dataset = SequenceDataset(train_frame, self.alphabet, pad_to_len)
-        self.val_dataset = SequenceDataset(val_frame, self.alphabet, pad_to_len)
-        self.test_dataset = SequenceDataset(test_frame, self.alphabet, pad_to_len)
+        self.train_dataset = SequenceDataset(train_frame, self.alphabet)
+        self.val_dataset = SequenceDataset(val_frame, self.alphabet)
+        self.test_dataset = SequenceDataset(test_frame, self.alphabet)
+
+    def _collate(self, batch):
+        """Pad every sequence in this batch to the batch's own max length, not the
+        dataset's — a single outlier elsewhere in the file should not inflate every
+        batch's memory footprint."""
+        tokens, labels = zip(*batch)
+        max_len = max(t.shape[0] for t in tokens)
+        padded = torch.full((len(tokens), max_len), self.alphabet.pad_idx, dtype=torch.long)
+        for i, seq_tokens in enumerate(tokens):
+            padded[i, :seq_tokens.shape[0]] = seq_tokens
+        return padded, torch.stack(labels)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size,
-                          num_workers=self.num_workers, shuffle=True)
+                          num_workers=self.num_workers, shuffle=True, collate_fn=self._collate)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset, batch_size=self.batch_size,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers, collate_fn=self._collate)
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers, collate_fn=self._collate)

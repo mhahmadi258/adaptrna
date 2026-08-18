@@ -190,9 +190,13 @@ tool's manifest `provenance` at registration.
   "sequence_column": "sequence",
   "label_column": "label",
   "ignored_columns": ["gene_id", "source"],   // present in the file, not used
+  "on_invalid": "fail",                       // fail | drop — rows outside ACGTUN
 
   "target_type": "binary",                    // binary | multiclass | regression
-  "classes": ["0", "1"],                      // classification only, ordered → class index
+  "classes": ["0", "1"],                      // classification only, display order only —
+                                               // NOT what decides polarity (positive_class does)
+  "positive_class": "1",                      // binary only; required, never inferred from
+                                               // classes' ordering — see §4
   "class_counts": {"0": 12094, "1": 12094},
   "target_summary": {"min": 0.0, "max": 1.0}, // regression only
 
@@ -343,16 +347,20 @@ def confirm_data_profile(spec: dict) -> dict:
 `orchestrator._summarize`:
 
 > `Use column 'sequence' as the sequence and 'label' as a binary target from data.csv
-> (24,188 rows → 19,350/2,419/2,419 train/val/test), and build task 'donor_sites'`
+> (24,188 rows → 19,350/2,419/2,419 train/val/test, positive class '1'), and build task
+> 'donor_sites'`
 
-`orchestrator._details` adds a `spec` block the CLI and UI render field by field:
+`orchestrator._details` adds a `spec` block the CLI and UI render field by field. The
+`label:` line always names which class is positive — never left to be inferred from the
+order `classes` happens to list them in, since that ordering is a profiling artifact
+(usually first-seen-in-file), not a polarity decision:
 
 ```
   ┌─ approval required ──────────────────────────────────────────
   │ Use column 'sequence' as the sequence and 'label' as a binary target …
   │   file:      /home/mh/data/donors.csv  (24,188 rows, 5 columns)
   │   sequence:  sequence          400 nt (min 400, max 400), dna
-  │   label:     label             binary — 0: 12,094 · 1: 12,094
+  │   label:     label             binary — 0: 12,094 · 1: 12,094 (positive: '1')
   │   ignored:   gene_id, source, chrom
   │   split:     random 80/10/10, seed 42, stratified → 19,350 / 2,419 / 2,419
   │   head:      linear classifier on the CLS token · BCE-with-logits · f1_score
@@ -361,6 +369,11 @@ def confirm_data_profile(spec: dict) -> dict:
   └──────────────────────────────────────────────────────────────
   edit a field, or approve? [field=value … | y/N]
 ```
+
+`positive_class` is proposed by the profiler (its default heuristic: the minority class,
+since "the thing being detected" is usually the rarer one) but is always shown and always
+editable — flipping it at the gate (`positive_class=0`) inverts every downstream metric and
+the sign of what `predict` reports, without touching `classes`' display order.
 
 ## 5. Approval decisions that carry edits
 
@@ -390,7 +403,8 @@ The change, kept as small as it can be:
    EDITABLE_ARGS = {
        "confirm_data_profile": ("spec.sequence_column", "spec.label_column",
                                 "spec.target_type", "spec.task_name",
-                                "spec.tool_description", "spec.split.*"),
+                                "spec.tool_description", "spec.positive_class",
+                                "spec.split.*"),
        "start_training":       ("plan.overrides.*", "plan.seed", "plan.arm",
                                 "plan.quick_run"),
    }
@@ -481,10 +495,13 @@ target_shapes:
     loss: binary_cross_entropy_with_logits
     metrics: [acc, precision, recall, f1_score]
     primary_metric: test/f1_score
-    predict_output: "one probability per sequence"
+    predict_output: "one probability per sequence — of the spec's positive_class"
     pad_sensitive: false
-    adapter_state: "If the task keeps a decision threshold, it is a plain Python value and
-                    MUST travel via adapter_extra_payload()/load_adapter_extra()."
+    adapter_state: "classes and positive_class decide what a prediction MEANS (which
+                    number is 'positive') and MUST travel via
+                    adapter_extra_payload()/load_adapter_extra(), or a reloaded adapter
+                    silently inverts every prediction. If the task also keeps a decision
+                    threshold, that is a plain Python value and travels the same way."
 
   multiclass:
     label: Multiclass sequence classification

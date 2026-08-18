@@ -26,7 +26,7 @@ _BASE = {
 }
 
 
-def _spec(target_type, split, classes, metric, task_name):
+def _spec(target_type, split, classes, metric, task_name, positive_class=None):
     spec = dict(_BASE)
     spec["target_type"] = target_type
     spec["classes"] = classes
@@ -34,12 +34,21 @@ def _spec(target_type, split, classes, metric, task_name):
     spec["split"] = split
     spec["task_name"] = task_name
     spec["tool_description"] = f"{target_type} target from a flat sequence/label table"
+    if positive_class is not None:
+        spec["positive_class"] = positive_class
     return spec
 
 
+# Positive class is deliberately '0' -- first in the `classes` list, not last. If polarity
+# ever regressed to following list order instead of `positive_class`, these specs would
+# catch it (see test_binary_positive_class_is_independent_of_class_order below).
 TEMPLATE_SPECS = {
-    "binary_random": _spec("binary", RANDOM_SPLIT, ["0", "1"], "test/f1_score", "binary_random"),
-    "binary_column": _spec("binary", COLUMN_SPLIT, ["0", "1"], "test/f1_score", "binary_column"),
+    "binary_random": _spec(
+        "binary", RANDOM_SPLIT, ["0", "1"], "test/f1_score", "binary_random", positive_class="0"
+    ),
+    "binary_column": _spec(
+        "binary", COLUMN_SPLIT, ["0", "1"], "test/f1_score", "binary_column", positive_class="0"
+    ),
     "multiclass_random": _spec(
         "multiclass", RANDOM_SPLIT, ["0", "1", "2"], "test/macro_f1", "multiclass_random"
     ),

@@ -95,8 +95,12 @@ def _check_covers(spec: Dict[str, Any]) -> None:
         classes = spec.get("classes") or []
         if not (1 < len(classes) <= MAX_CLASSES):
             raise _NotCovered("classes")
-        if target_type == "binary" and len(classes) != 2:
-            raise _NotCovered("classes")
+        if target_type == "binary":
+            if len(classes) != 2:
+                raise _NotCovered("classes")
+            positive_class = spec.get("positive_class")
+            if positive_class is None or str(positive_class) not in [str(c) for c in classes]:
+                raise _NotCovered("positive_class")
 
     split = spec.get("split") or {}
     mode = split.get("mode")
@@ -140,6 +144,7 @@ def _context(spec: Dict[str, Any]) -> Dict[str, Any]:
         "compression": fmt.get("compression"),
         "on_invalid": spec.get("on_invalid", "fail"),
         "classes": spec.get("classes"),
+        "positive_class": spec.get("positive_class") if target_type == "binary" else None,
         "primary_metric": spec["head"]["primary_metric"],
         "data_path": spec["path"],
         "split_mode": split["mode"],

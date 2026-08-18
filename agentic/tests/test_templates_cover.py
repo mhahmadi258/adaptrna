@@ -93,6 +93,20 @@ def test_rejects_task_name_that_is_not_a_valid_identifier():
     assert not templates.covers(spec)
 
 
+def test_rejects_binary_spec_without_a_positive_class():
+    spec = copy.deepcopy(TEMPLATE_SPECS["binary_random"])
+    del spec["positive_class"]
+
+    assert not templates.covers(spec)
+
+
+def test_rejects_binary_spec_whose_positive_class_is_not_one_of_classes():
+    spec = copy.deepcopy(TEMPLATE_SPECS["binary_random"])
+    spec["positive_class"] = "yes"  # classes are "0"/"1"
+
+    assert not templates.covers(spec)
+
+
 def test_render_raises_rather_than_silently_emitting_code_for_an_uncovered_spec():
     spec = copy.deepcopy(TEMPLATE_SPECS["binary_random"])
     spec["target_type"] = "per_position"
