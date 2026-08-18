@@ -1,14 +1,17 @@
 """Context assembly for ToolSmith and Verifier.
 
 Everything here already exists somewhere in the project — the engine's subclass contract,
-its worked example, the external-tool contract. This module's only job is to put the
-right pieces in front of the right agent.
+a worked example, the external-tool contract. This module's only job is to put the right
+pieces in front of the right agent.
 
-Phase 13: the platform ships no task definitions, so there is no "closest known task
-shape" to show the generator any more (D6) — Stage 4 of that phase replaces it with a
-spec-driven recipe section and re-points the worked example at the deterministic
-template's own output. Until then this module still targets the pre-Phase-13 flow
-(profile + name/description in, not an approved DatasetSpec).
+Phase 13 (D6): the platform ships no task definitions, so there is no "closest known task
+shape" to show the generator any more, and no shipped example to read. What replaces both:
+the approved `DatasetSpec` itself (`spec_section`) — the contract with the user, already
+agreed at gate 1 — the one `target_shapes.yaml` recipe matching its target type
+(`recipe_section`), and a worked example that is the deterministic template's own output
+against a synthetic fixture spec, carrying no RNA task identity at all
+(`worked_example`). This is the fallback path only: `codegen/templates/` covers the
+declared case with no model call (plan §7.2).
 """
 
 from pathlib import Path
@@ -17,8 +20,12 @@ import json
 
 from adaptrna_agentic.settings import REPO_ROOT
 
-EXAMPLE_DIR = REPO_ROOT / "engine" / "examples" / "ncrna_classification"
 CONTRACT_FILE = REPO_ROOT / "agentic" / "adaptrna_agentic" / "toolhub" / "external" / "contract.py"
+
+#: The tiny synthetic sequence,label table `worked_example()` renders the template
+#: against — shared with the Stage 0 harness controls and the Stage 1 template tests, so
+#: nothing extra needs to be written or kept in sync (plan §7.6).
+_WORKED_EXAMPLE_CSV = REPO_ROOT / "agentic" / "tests" / "fixtures" / "data" / "binary.csv"
 
 #: The engine's subclass contract, as the README states it. Kept here (rather than parsed
 #: out of the engine) so the generator sees a stable, complete statement of the hooks.
@@ -85,6 +92,14 @@ Hard requirements for the files you produce:
   imported under that name both while it is verified and after it lands.
 * Use `lightning.pytorch`, never the standalone `pytorch_lightning` package.
 * Return JSON-serialisable, task-native values from postprocess_predictions.
+* The datamodule reads EXACTLY `spec["sequence_column"]` and `spec["label_column"]` from
+  `spec["path"]`, and ignores every other column.
+* It implements the approved split (`spec["split"]`) and nothing else — no re-shuffling,
+  no second seed, no different fractions.
+* `PRIMARY_METRIC` MUST equal `spec["head"]["primary_metric"]` exactly, and it MUST be a
+  key `compute_metrics` actually returns.
+* Rows whose sequence contains characters outside ACGTUN are handled per
+  `spec["on_invalid"]` — "fail" (raise loudly) by default, "drop" only if the spec says so.
 """
 
 
@@ -95,39 +110,107 @@ def _read(path: Path) -> str:
         return ""
 
 
-def worked_example() -> str:
-    """The engine's own end-to-end example of adding a task in three files."""
-    blocks = []
-    for filename in ("task.py", "datamodule.py", "config.yaml"):
-        content = _read(EXAMPLE_DIR / filename)
-        if content:
-            blocks.append(f"--- examples/ncrna_classification/{filename}\n{content}")
+def spec_section(spec: Dict[str, Any]) -> str:
+    """The approved spec, described as what it is: an agreement already made."""
+    return (
+        "# The approved dataset spec\n\n"
+        "This is the contract with the user, already agreed at gate 1 (confirm_data_"
+        "profile) — read exactly the columns and implement exactly the split it names, "
+        "nothing else.\n\n"
+        f"```json\n{json.dumps(spec, indent=2, default=str)}\n```"
+    )
 
-    return "\n\n".join(blocks)
+
+def recipe_section(spec: Dict[str, Any]) -> str:
+    """The one target_shapes.yaml entry matching the approved target type — nothing else,
+    and no task identity."""
+    from adaptrna_agentic.knowledge import target_shape
+
+    target_type = spec.get("target_type")
+    shape = target_shape(target_type)
+
+    return (
+        f"# Recipe for a '{target_type}' target\n\n"
+        f"head: {shape['head']}\n"
+        f"extract_features: {shape['extract_features']}\n"
+        f"loss: {shape['loss']}\n"
+        f"metrics: {shape['metrics']}\n"
+        f"primary_metric: {shape['primary_metric']}\n"
+        f"predict_output: {shape['predict_output']}\n"
+        f"pad_sensitive: {shape['pad_sensitive']}\n\n"
+        f"Silent-failure trap for this shape: {shape['adapter_state']}"
+    )
+
+
+def split_instructions(spec: Dict[str, Any]) -> str:
+    """Exact split instructions generated from the approved spec's split policy."""
+    split = spec.get("split") or {}
+
+    if split.get("mode") == "column":
+        return (
+            "# Split policy\n\n"
+            f"Column mode: read column '{split.get('column')}' and assign each row to "
+            f"train/val/test using exactly this mapping (drop rows matching none of "
+            f"it): {json.dumps(split.get('mapping'))}"
+        )
+
+    fractions = split.get("fractions") or {}
+    stratified = " Stratify by label." if split.get("stratify") else ""
+    return (
+        "# Split policy\n\n"
+        f"Random split with fractions {json.dumps(fractions)}, seed {split.get('seed')}."
+        f"{stratified} No re-shuffling, no second seed, no different fractions."
+    )
+
+
+def worked_example() -> str:
+    """The template's own rendered output against a synthetic fixture spec — a neutral,
+    guaranteed-correct example carrying no RNA task identity, replacing the shipped
+    example read (D6). Nothing extra to write or maintain: it is the same reviewed
+    template that produces production code, rendered for the target type at hand."""
+    from adaptrna_agentic.codegen.templates import render as templates
+
+    fixture_spec = {
+        "target_type": "binary",
+        "task_name": "worked_example",
+        "tool_description": "a worked example for the code generator",
+        "sequence_column": "sequence",
+        "label_column": "label",
+        "path": str(_WORKED_EXAMPLE_CSV),
+        "format": {"separator": ",", "compression": None},
+        "classes": ["0", "1"],
+        "positive_class": "1",
+        "head": {"primary_metric": "test/f1_score"},
+        "split": {
+            "mode": "random", "fractions": {"train": 0.8, "val": 0.1, "test": 0.1},
+            "seed": 42, "stratify": True,
+        },
+    }
+    files = templates.render(fixture_spec)
+
+    return "\n\n".join(f"--- {name}\n{content}" for name, content in sorted(files.items()))
 
 
 def task_system_prompt() -> str:
     return (
-        "You write new tasks for the AdaptRNA fine-tuning engine. A task is exactly three "
-        "files and requires no change to the engine itself.\n\n"
+        "You write the data loader and head for a task the AdaptRNA fine-tuning engine "
+        "does not yet have. A task is exactly three files (task.py, datamodule.py, "
+        "config.yaml) and requires no change to the engine itself. You are only called "
+        "for specs the deterministic template cannot express — the worked example below "
+        "is that same template, rendered for a shape close to this one.\n\n"
         "Write complete, runnable files — no placeholders, no TODOs, no invented helper "
         "modules. Follow the worked example's structure and the engine's contract "
-        "exactly, and read the user's data as it actually is on disk."
+        "exactly, and read the user's data exactly as the approved spec describes it."
     )
 
 
-def task_user_prompt(
-    task_name: str,
-    description: str,
-    profile: Dict[str, Any],
-    feedback: Optional[str] = None,
-) -> str:
+def task_user_prompt(spec: Dict[str, Any], feedback: Optional[str] = None) -> str:
     sections = [
-        f"# Task to build\n\nName: `{task_name}`\nWhat the user wants: {description}",
-        f"# The data\n\n```json\n{json.dumps(profile, indent=2, default=str)}\n```",
-    ]
-
-    sections += [
+        f"# Task to build\n\nName: `{spec.get('task_name')}`\n"
+        f"What the user wants: {spec.get('tool_description')}",
+        spec_section(spec),
+        recipe_section(spec),
+        split_instructions(spec),
         f"# The engine's subclass contract\n\n```\n{SUBCLASS_CONTRACT}\n```",
         f"# Silent-failure rules\n\n{SILENT_FAILURE_RULES}",
         f"# Requirements\n\n{HARD_REQUIREMENTS}",
@@ -158,19 +241,36 @@ def verifier_system_prompt() -> str:
 
 def verifier_user_prompt(
     description: str,
-    profile: Dict[str, Any],
+    spec: Dict[str, Any],
     files: Dict[str, str],
     harness_summary: str,
+    rendered: bool = False,
 ) -> str:
     listing = "\n\n".join(
         f"--- {name}\n{content}" for name, content in sorted(files.items())
+        if name != "spec.json"
     )
+
+    if rendered:
+        framing = (
+            "This code was rendered deterministically from the approved spec below, by a "
+            "reviewed template — there is no author whose judgment you are auditing. Ask "
+            "only the narrower question: does this code do what this spec says, for this "
+            "data? A rejection here means the template does not fit this spec, not that "
+            "someone made a mistake."
+        )
+    else:
+        framing = (
+            "Judge the code in front of you — do not assume good intent, and do not "
+            "re-litigate what the harness already proved."
+        )
 
     return "\n\n".join([
         f"# What the user asked for\n\n{description}",
-        f"# The data\n\n```json\n{json.dumps(profile, indent=2, default=str)}\n```",
+        f"# The data\n\n```json\n{json.dumps(spec, indent=2, default=str)}\n```",
         f"# Automated verification (already run)\n\n```\n{harness_summary}\n```",
         f"# The generated code\n\n```python\n{listing}\n```",
+        f"# How to review this\n\n{framing}",
         "# Your checklist\n\n" + SILENT_FAILURE_RULES + "\n"
         "Also check: does the datamodule read the columns this data actually has? Does "
         "the loss match the target type? Do the metrics suit the task? Is the config's "

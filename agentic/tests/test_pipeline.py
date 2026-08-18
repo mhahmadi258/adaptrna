@@ -2,6 +2,12 @@
 
 No API key, no network: a fake structured-output model replays whatever files the test
 wants ToolSmith to have "written", and the real harness verifies them for real.
+
+Phase 13: `create_task` takes an approved DatasetSpec, not a name/description/profile
+triple, and tries the deterministic template first (§7.2) — the routing itself is
+`test_codegen_paths.py`'s job. Every spec here deliberately omits `positive_class`, which
+`covers()` requires for a binary target (D5/Fix 5), so `covers(spec)` is False and these
+tests always land on the ToolSmith/Verifier fallback loop this file is about.
 """
 
 import uuid
@@ -51,9 +57,31 @@ def dataset(tmp_path):
 
 
 @pytest.fixture
-def profile(dataset):
-    return {"path": str(dataset / "train.csv"), "target_type": "binary",
-            "length_median": 32, "sequence_column": "sequence", "target_column": "label"}
+def spec(dataset):
+    """A spec factory: every spec it builds is deliberately NOT covered by the template
+    (no positive_class), so create_task() always falls straight to the fallback loop
+    these tests exercise, without a model-free template attempt in the way."""
+
+    def make(task_name, description="classify these sequences"):
+        return {
+            "spec_version": 1,
+            "source": "confirm_data_profile",
+            "path": str(dataset / "train.csv"),
+            "format": {"separator": ",", "compression": None},
+            "sequence_column": "sequence",
+            "label_column": "label",
+            "target_type": "binary",
+            "classes": ["0", "1"],
+            "head": {"primary_metric": "test/f1_score"},
+            "split": {
+                "mode": "random", "fractions": {"train": 0.8, "val": 0.1, "test": 0.1},
+                "seed": 42, "stratify": True,
+            },
+            "task_name": task_name,
+            "tool_description": description,
+        }
+
+    return make
 
 
 def files_for(task_name, dataset, source_fn=sources.good_task, datamodule=None):
@@ -70,16 +98,16 @@ def unique_name():
 
 # ---------------------------------------------------------------- happy path
 
-def test_first_attempt_succeeds_and_stages(tmp_path, dataset, profile):
+def test_first_attempt_succeeds_and_stages(tmp_path, dataset, spec):
     name = unique_name()
     smith = ScriptedStructuredModel([generated(files_for(name, dataset))])
 
     result = pipeline.create_task(
-        name, "classify these sequences", profile,
-        toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
+        spec(name), toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
     )
 
     assert result.ok
+    assert result.path == "generated"
     assert len(result.attempts) == 1
     assert result.stage is not None
     # Staged, NOT landed.
@@ -89,11 +117,12 @@ def test_first_attempt_succeeds_and_stages(tmp_path, dataset, profile):
     payload = result.to_dict()
     assert payload["ok"] is True
     assert {f["path"] for f in payload["files"]} == {
-        f"adaptrna_custom/tasks/{name}/{f}" for f in ("task.py", "datamodule.py", "config.yaml")
+        f"adaptrna_custom/tasks/{name}/{f}"
+        for f in ("task.py", "datamodule.py", "config.yaml", "spec.json")
     }
 
 
-def test_reviewer_can_reject_code_the_harness_passed(tmp_path, dataset, profile):
+def test_reviewer_can_reject_code_the_harness_passed(tmp_path, dataset, spec):
     name = unique_name()
     smith = ScriptedStructuredModel([generated(files_for(name, dataset))])
     critic = ScriptedStructuredModel([
@@ -103,8 +132,7 @@ def test_reviewer_can_reject_code_the_harness_passed(tmp_path, dataset, profile)
     ])
 
     result = pipeline.create_task(
-        name, "classify", profile, toolsmith_model=smith, verifier_model=critic,
-        data_dir=tmp_path / "hub",
+        spec(name), toolsmith_model=smith, verifier_model=critic, data_dir=tmp_path / "hub",
     )
 
     assert not result.ok
@@ -115,7 +143,7 @@ def test_reviewer_can_reject_code_the_harness_passed(tmp_path, dataset, profile)
 
 # ---------------------------------------------------------------- convergence
 
-def test_loop_converges_after_a_failed_attempt(tmp_path, dataset, profile):
+def test_loop_converges_after_a_failed_attempt(tmp_path, dataset, spec):
     name = unique_name()
     smith = ScriptedStructuredModel([
         generated(files_for(name, dataset, sources.task_with_unsaved_state)),  # caught
@@ -123,8 +151,7 @@ def test_loop_converges_after_a_failed_attempt(tmp_path, dataset, profile):
     ])
 
     result = pipeline.create_task(
-        name, "classify", profile, toolsmith_model=smith, skip_review=True,
-        data_dir=tmp_path / "hub",
+        spec(name), toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
     )
 
     assert result.ok
@@ -138,15 +165,14 @@ def test_loop_converges_after_a_failed_attempt(tmp_path, dataset, profile):
     assert "ADAPTER_EXTRA_PREFIXES" in second_prompt
 
 
-def test_gives_up_after_three_attempts_and_writes_nothing(tmp_path, dataset, profile):
+def test_gives_up_after_three_attempts_and_writes_nothing(tmp_path, dataset, spec):
     name = unique_name()
     smith = ScriptedStructuredModel([
         generated(files_for(name, dataset, sources.task_with_unsaved_state))
     ])
 
     result = pipeline.create_task(
-        name, "classify", profile, toolsmith_model=smith, skip_review=True,
-        data_dir=tmp_path / "hub",
+        spec(name), toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
     )
 
     assert not result.ok
@@ -156,12 +182,12 @@ def test_gives_up_after_three_attempts_and_writes_nothing(tmp_path, dataset, pro
     assert "Gave up after 3" in result.to_dict()["conclusion"]
 
 
-def test_incomplete_file_set_is_rejected_before_verification(tmp_path, dataset, profile):
+def test_incomplete_file_set_is_rejected_before_verification(tmp_path, dataset, spec):
     name = unique_name()
     smith = ScriptedStructuredModel([generated({"task.py": "x = 1"})])
 
     result = pipeline.create_task(
-        name, "classify", profile, toolsmith_model=smith, skip_review=True,
+        spec(name), toolsmith_model=smith, skip_review=True,
         max_iterations=1, data_dir=tmp_path / "hub",
     )
 
@@ -169,7 +195,7 @@ def test_incomplete_file_set_is_rejected_before_verification(tmp_path, dataset, 
     assert "missing" in result.attempts[0].harness_report["checks"][0]["detail"]
 
 
-def test_stray_paths_from_the_model_are_normalised(tmp_path, dataset, profile):
+def test_stray_paths_from_the_model_are_normalised(tmp_path, dataset, spec):
     name = unique_name()
     smith = ScriptedStructuredModel([generated({
         f"adaptrna_custom/tasks/{name}/task.py": sources.good_task(name),
@@ -178,8 +204,7 @@ def test_stray_paths_from_the_model_are_normalised(tmp_path, dataset, profile):
     })])
 
     result = pipeline.create_task(
-        name, "classify", profile, toolsmith_model=smith, skip_review=True,
-        data_dir=tmp_path / "hub",
+        spec(name), toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
     )
 
     assert result.ok, result.to_dict()
@@ -187,19 +212,19 @@ def test_stray_paths_from_the_model_are_normalised(tmp_path, dataset, profile):
 
 # ---------------------------------------------------------------- landing
 
-def test_landing_writes_the_files_and_makes_the_task_importable(tmp_path, dataset, profile):
+def test_landing_writes_the_files_and_makes_the_task_importable(tmp_path, dataset, spec):
     from adaptrna_agentic.codegen.discovery import custom_task_names, load_all
 
     name = unique_name()
     smith = ScriptedStructuredModel([generated(files_for(name, dataset))])
     result = pipeline.create_task(
-        name, "classify", profile, toolsmith_model=smith, skip_review=True,
-        data_dir=tmp_path / "hub",
+        spec(name), toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
     )
 
     written = staging.land(result.stage)
     try:
         assert f"adaptrna_custom/tasks/{name}/task.py" in written
+        assert f"adaptrna_custom/tasks/{name}/spec.json" in written
         assert name in custom_task_names()
 
         failures = load_all(only=[name])
@@ -215,11 +240,10 @@ def test_landing_writes_the_files_and_makes_the_task_importable(tmp_path, datase
         shutil.rmtree(CUSTOM_ROOT / "tasks" / name, ignore_errors=True)
 
 
-def test_existing_task_name_is_never_silently_overwritten(tmp_path, dataset, profile, monkeypatch):
+def test_existing_task_name_is_never_silently_overwritten(tmp_path, dataset, spec, monkeypatch):
     monkeypatch.setattr(
         "adaptrna_agentic.codegen.discovery.custom_task_names", lambda: ["already_here"]
     )
 
     with pytest.raises(ToolHubError, match="already exists"):
-        pipeline.create_task("already_here", "classify", profile,
-                             toolsmith_model=ScriptedStructuredModel([]))
+        pipeline.create_task(spec("already_here"), toolsmith_model=ScriptedStructuredModel([]))

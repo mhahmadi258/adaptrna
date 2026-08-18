@@ -304,17 +304,27 @@ def _codegen_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseTool
     """Phase 6: write, verify and land new tasks and external wrappers."""
     from adaptrna_agentic.codegen import pipeline, staging
 
-    def create_task_tool(name: str, description: str, data_path: str) -> dict:
-        """Build a NEW engine task for data no existing task can read.
+    def create_task_tool(spec: dict) -> dict:
+        """Build the data loader and head for an approved dataset spec.
 
-        Writes the three files (task module, datamodule, config), verifies them against a
-        real forward/backward pass and an adapter round trip, and has them reviewed. The
-        code is only staged — call land_generated_code to write it into the project.
+        Pass the spec returned by confirm_data_profile unchanged — its columns, target
+        type, split policy and task name become the new task's. Renders deterministically
+        from a template when the spec is fully covered (no model call); falls through to
+        generation only when it is not, or when the render fails verification. Writes and
+        verifies the three task files (task module, datamodule, config) against a real
+        forward/backward pass and an adapter round trip, and has them reviewed. The code
+        is only staged — call land_generated_code to write it into the project.
         """
-        from adaptrna_agentic.profiling.profiler import profile_dataset as _profile
+        from adaptrna_agentic.profiling.profiler import SPEC_SOURCE
 
-        profile = _profile(data_path)
-        result = pipeline.create_task(name, description, profile)
+        if spec.get("source") != SPEC_SOURCE:
+            raise ToolHubError(
+                "This spec did not come from confirm_data_profile. Call "
+                "confirm_data_profile and pass its approved result through unchanged — "
+                "create_task_tool refuses to assemble one for you."
+            )
+
+        result = pipeline.create_task(spec)
         if result.stage is not None:
             _STAGES[result.stage.id] = result.stage
 

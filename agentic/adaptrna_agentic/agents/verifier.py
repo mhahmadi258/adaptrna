@@ -49,17 +49,20 @@ def _model(model=None):
 
 def review_task(
     description: str,
-    profile: Dict[str, object],
+    spec: Dict[str, object],
     files: Dict[str, str],
     harness_summary: str,
     model=None,
+    rendered: bool = False,
 ) -> Review:
+    """`rendered=True` on the template path (plan §7.4): there is no author to judge, so
+    the prompt asks the narrower question — does this code do what the spec says?"""
     structured = _model(model).with_structured_output(Review)
 
     return structured.invoke([
         {"role": "system", "content": prompts.verifier_system_prompt()},
         {"role": "user", "content": prompts.verifier_user_prompt(
-            description, profile, files, harness_summary
+            description, spec, files, harness_summary, rendered=rendered
         )},
     ])
 

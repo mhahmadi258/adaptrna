@@ -146,6 +146,39 @@ def test_landing_an_unknown_stage_is_refused(tools):
     assert "No staged artifact" in result
 
 
+def test_create_task_tool_refuses_a_spec_not_from_confirm_data_profile(tools):
+    result = tools["create_task_tool"].invoke({"spec": {"task_name": "x", "source": "made_up"}})
+
+    assert isinstance(result, str)
+    assert "confirm_data_profile" in result
+
+
+def test_create_task_tool_renders_an_approved_spec_via_the_template(tools, tmp_path):
+    """The end-to-end round trip through the real tool wrapper: profile -> approve ->
+    build. A realistic spec is covered by the template, so this makes no model call."""
+    from adaptrna_agentic.agents.tool_factory import staged
+    from adaptrna_agentic.profiling.profiler import confirm_profile, profile_dataset
+
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label"] + [f"{'ACGU' * 10},{i % 2}" for i in range(40)]
+    path.write_text("\n".join(rows) + "\n")
+
+    proposed = profile_dataset(path)
+    spec = confirm_profile(proposed)
+
+    result = tools["create_task_tool"].invoke({"spec": spec})
+
+    assert result["ok"] is True, result
+    assert result["path"] == "template"
+    assert result["stage_id"]
+
+    stage = staged(result["stage_id"])
+    assert stage is not None
+    assert {Path(f).name for f in stage.files} == {
+        "task.py", "datamodule.py", "config.yaml", "spec.json",
+    }
+
+
 def test_approval_payload_shows_the_files_and_the_staging_path(tmp_path):
     from adaptrna_agentic.agents.orchestrator import _details, _summarize
     from adaptrna_agentic.agents.tool_factory import _STAGES
