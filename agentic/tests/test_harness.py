@@ -9,9 +9,10 @@ import uuid
 
 import pytest
 
-from adaptrna_agentic.codegen.harness import STRUCTURAL_CHECKS, summarize, verify_task
+from adaptrna_agentic.codegen.harness import summarize, verify_task
 from adaptrna_agentic.codegen.staging import stage_task
 from fixtures import broken_task_sources as sources
+from fixtures import target_type_tasks as target_types
 
 HARNESS_TIMEOUT = 600
 
@@ -44,6 +45,25 @@ def stage(tmp_path, dataset, task_source_fn, datamodule=None, name=None):
     return task_name, stage_task(task_name, files, data_dir=tmp_path / "toolhub_data")
 
 
+def stage_fixture_task(tmp_path, target_type: str):
+    """Stage one of the hand-written, known-good fixture tasks (§target_type_tasks)."""
+    info = target_types.TARGET_TYPES[target_type]
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    train_text, val_text = target_types.split_train_val(info["csv"])
+    (data_root / "train.csv").write_text(train_text)
+    (data_root / "val.csv").write_text(val_text)
+
+    task_name = f"fixture_{target_type}"
+    files = {
+        "task.py": info["task"](task_name),
+        "datamodule.py": info["datamodule"],
+        "config.yaml": info["config"](task_name, data_root),
+    }
+    return task_name, stage_task(task_name, files, data_dir=tmp_path / "toolhub_data")
+
+
 def run(staged, task_name, **kwargs):
     return verify_task(
         task_name,
@@ -66,14 +86,16 @@ def detail_of(report, check_name) -> str:
 
 # ---------------------------------------------------------------- controls
 
-@pytest.mark.parametrize(
-    "task,config",
-    [("splice_site", "engine/configs/tasks/splice_site.yaml"),
-     ("mrl", "engine/configs/tasks/mrl.yaml")],
-)
-def test_shipped_tasks_pass_the_structural_checks(task, config):
-    report = verify_task(task, config_path=config, only=list(STRUCTURAL_CHECKS),
-                         sequences=SEQS, timeout=HARNESS_TIMEOUT)
+@pytest.mark.parametrize("target_type", ("binary", "multiclass", "regression"))
+def test_fixture_tasks_pass_every_check(tmp_path, target_type):
+    """The known-good control, one per supported target type (Phase 13, D1).
+
+    Unlike the shipped-task control it replaces, this runs the *full* harness — not just
+    the structural checks — because the fixture ships its own real data.
+    """
+    task_name, staged = stage_fixture_task(tmp_path, target_type)
+
+    report = run(staged, task_name)
 
     assert report["ok"], summarize(report)
     assert failed(report) == set()
