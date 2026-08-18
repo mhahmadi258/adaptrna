@@ -41,6 +41,7 @@ def run_checks(data_dir=None, jobs_dir=None) -> Dict[str, Any]:
     checks.extend(_artifact_checks(registry))
     checks.append(_external_tools_check(registry))
     checks.append(_custom_tasks_check())
+    checks.append(_template_version_check())
     checks.extend(_job_checks(jobs_dir))
     checks.append(_staging_check(registry))
     checks.extend(_disk_checks(registry))
@@ -152,6 +153,34 @@ def _custom_tasks_check() -> Check:
 
     return Check("custom_tasks", OK, f"{len(names)} generated task(s) import cleanly",
                  data={"tasks": names})
+
+
+def _template_version_check() -> Check:
+    """A template fix does not reach already-landed tasks (plan §7.3) — landed code is
+    the user's, by design. This makes "rendered from a superseded version" a *visible*
+    state rather than an invisible one; it never changes anything."""
+    from adaptrna_agentic.codegen.discovery import custom_task_names, landed_spec
+    from adaptrna_agentic.codegen.templates.render import TEMPLATE_VERSION
+
+    stale = []
+    for task in custom_task_names():
+        spec = landed_spec(task)
+        version = (spec or {}).get("template_version")
+        if version is not None and version != TEMPLATE_VERSION:
+            stale.append({"task": task, "template_version": version})
+
+    if stale:
+        names = ", ".join(f"{s['task']} (v{s['template_version']})" for s in stale)
+        return Check(
+            "template_version", WARN,
+            f"{len(stale)} landed task(s) rendered from a superseded template "
+            f"(current: v{TEMPLATE_VERSION}): {names}",
+            "landed code is not regenerated automatically -- review the current "
+            "template's diff and re-render by hand if you want the fix",
+            data={"stale": stale},
+        )
+
+    return Check("template_version", OK, f"current template version: v{TEMPLATE_VERSION}")
 
 
 def _job_checks(jobs_dir=None) -> List[Check]:

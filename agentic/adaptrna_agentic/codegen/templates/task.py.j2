@@ -1,0 +1,268 @@
+# rendered by adaptrna template v{{ template_version }} from spec.json
+"""{{ tool_description }}"""
+
+import torch
+import torch.nn as nn
+{% if target_type == "regression" %}
+import torch.nn.functional as F
+from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
+{% elif target_type == "multiclass" %}
+from torchmetrics.classification import MulticlassAccuracy, MulticlassF1Score
+{% else %}
+from torchmetrics.classification import (
+    BinaryAccuracy, BinaryF1Score, BinaryPrecision, BinaryRecall,
+)
+{% endif %}
+
+from rinalmo.data.alphabet import Alphabet
+from rinalmo_hub.module import BaseDownstreamModule
+from rinalmo_hub.registry import register_task
+
+{% if target_type == "multiclass" %}
+CLASSES = {{ classes | pyrepr }}
+NUM_CLASSES = len(CLASSES)
+{% elif target_type == "binary" %}
+CLASSES = {{ classes | pyrepr }}
+POSITIVE_CLASS = {{ positive_class | pyrepr }}
+{% endif %}
+
+{% if target_type == "regression" %}
+class PooledRegressionHead(nn.Module):
+    """Mean-pool the non-padded positions, then an MLP down to one scalar."""
+
+    def __init__(self, embed_dim, hidden_dim=32):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, representation, pad_mask):
+        keep = (~pad_mask).unsqueeze(-1).to(representation.dtype)
+        pooled = (representation * keep).sum(dim=1) / keep.sum(dim=1).clamp(min=1.0)
+        return self.mlp(pooled).squeeze(-1)
+
+
+class TargetScaler(nn.Module):
+    """Standardises the regression target: mean/std, fitted once on the training split.
+
+    Held as buffers on their own submodule so they have a stable state-dict prefix —
+    `ADAPTER_EXTRA_PREFIXES` below ships them inside the adapter file. Predictions depend
+    on them (`postprocess_predictions` un-scales through this same object), so losing them
+    on reload would silently return numbers on the wrong scale.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("mean", torch.zeros(1))
+        self.register_buffer("std", torch.ones(1))
+
+    def fit(self, targets: torch.Tensor) -> None:
+        std = targets.std()
+        if not torch.isfinite(std) or std < 1e-6:
+            std = torch.ones_like(std)
+        self.mean.copy_(targets.mean().view(1))
+        self.std.copy_(std.view(1))
+
+    def transform(self, targets):
+        return (targets - self.mean) / self.std
+
+    def inverse_transform(self, targets):
+        return targets * self.std + self.mean
+
+
+{% endif %}
+@register_task("{{ task_name }}")
+class {{ class_name }}(BaseDownstreamModule):
+{% if target_type == "binary" %}
+    """{{ tool_description }}
+
+    Positive class: '{{ positive_class }}'. `postprocess_predictions` returns the
+    probability of this class.
+    """
+{% else %}
+    """{{ tool_description }}"""
+{% endif %}
+
+    TASK_NAME = "{{ task_name }}"
+{% if target_type == "regression" %}
+    # The fitted target mean/std live in `scaler.mean` / `scaler.std` as buffers.
+    ADAPTER_EXTRA_PREFIXES = ("scaler.",)
+{% else %}
+    ADAPTER_EXTRA_PREFIXES = ()
+{% endif %}
+    PRIMARY_METRIC = "{{ primary_metric }}"
+
+{% if target_type == "regression" %}
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scaler = TargetScaler()
+
+{% endif %}
+    def build_head(self, embed_dim, hidden_dim: int = 32, **kwargs):
+        if kwargs:
+            raise TypeError(f"Unexpected head config keys: {sorted(kwargs)}")
+
+{% if target_type == "regression" %}
+        return PooledRegressionHead(embed_dim, hidden_dim)
+{% elif target_type == "multiclass" %}
+        return nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, NUM_CLASSES)
+        )
+{% else %}
+        return nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, 1)
+        )
+{% endif %}
+
+    def build_metrics(self, stage):
+        if stage == "train":
+            return None
+
+{% if target_type == "regression" %}
+        return nn.ModuleDict({
+            "mse": MeanSquaredError(), "mae": MeanAbsoluteError(), "r2": R2Score(),
+        })
+{% elif target_type == "multiclass" %}
+        return nn.ModuleDict({
+            "acc": MulticlassAccuracy(num_classes=NUM_CLASSES),
+            "macro_f1": MulticlassF1Score(num_classes=NUM_CLASSES, average="macro"),
+        })
+{% else %}
+        return nn.ModuleDict({
+            "acc": BinaryAccuracy(), "precision": BinaryPrecision(),
+            "recall": BinaryRecall(), "f1_score": BinaryF1Score(),
+        })
+{% endif %}
+
+    def extract_features(self, representation, tokens):
+{% if target_type == "regression" %}
+        # Mask padded positions, then let the head mean-pool over the rest.
+        pad_mask = tokens.eq(self.pad_idx)
+        representation = representation.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+        return representation, pad_mask
+{% else %}
+        # CLS only; EOS and padding never reach the head.
+        return representation[:, 0]
+{% endif %}
+
+    def compute_loss(self, outputs, batch):
+        _, labels = batch
+{% if target_type == "regression" %}
+        return F.mse_loss(outputs, self.scaler.transform(labels).to(outputs.dtype))
+{% elif target_type == "multiclass" %}
+        return nn.functional.cross_entropy(outputs, labels)
+{% else %}
+        return nn.functional.binary_cross_entropy_with_logits(
+            outputs, labels.unsqueeze(1).to(outputs.dtype)
+        )
+{% endif %}
+
+    def update_metrics(self, outputs, batch, stage):
+        if stage not in self.metrics:
+            return
+
+        _, labels = batch
+{% if target_type == "regression" %}
+        # Un-scale before updating metrics, so R2/MSE/MAE stay in the original target
+        # scale rather than the standardised units the loss trains on.
+        preds = self.scaler.inverse_transform(outputs.float())
+        for metric in self.metrics[stage].values():
+            metric.update(preds, labels.float())
+{% elif target_type == "multiclass" %}
+        for metric in self.metrics[stage].values():
+            metric.update(outputs.float(), labels)
+{% else %}
+        probs = torch.sigmoid(outputs.float())
+        for metric in self.metrics[stage].values():
+            metric.update(probs, labels.unsqueeze(1).int())
+{% endif %}
+
+    def compute_metrics(self, stage):
+        if stage not in self.metrics:
+            return {}
+
+        return {f"{stage}/{name}": metric.compute()
+                for name, metric in self.metrics[stage].items()}
+
+    def postprocess_predictions(self, outputs, tokens, sequences):
+{% if target_type == "regression" %}
+        # Original target scale, not the standardised units the loss trains on.
+        return self.scaler.inverse_transform(outputs.float())
+{% elif target_type == "multiclass" %}
+        probs = torch.softmax(outputs.float(), dim=-1)
+        predictions = []
+        for row in probs.tolist():
+            index = max(range(len(row)), key=row.__getitem__)
+            predictions.append({
+                "label": CLASSES[index],
+                "probabilities": dict(zip(CLASSES, row)),
+            })
+        return predictions
+{% else %}
+        # Probability of the positive class, '{{ positive_class }}'.
+        return torch.sigmoid(outputs.float()).squeeze(-1)
+{% endif %}
+
+{% if target_type in ("binary", "multiclass") %}
+    def adapter_extra_payload(self) -> dict:
+        # The class order (and, for binary, which class is positive) decides what a
+        # prediction MEANS. Ship it in the adapter file so a reload can check itself
+        # against it rather than silently relabelling.
+{% if target_type == "binary" %}
+        return {"classes": CLASSES, "positive_class": POSITIVE_CLASS}
+{% else %}
+        return {"classes": CLASSES}
+{% endif %}
+
+    def load_adapter_extra(self, extra: dict) -> None:
+        if not extra:
+            return  # tolerate an older adapter that predates this payload
+
+        if extra.get("classes") != CLASSES:
+            raise ValueError(
+                f"This adapter was saved with classes {extra.get('classes')}, but the "
+                f"loaded module defines CLASSES = {CLASSES}. Loading it would silently "
+                f"relabel every prediction."
+            )
+{% if target_type == "binary" %}
+        if extra.get("positive_class") != POSITIVE_CLASS:
+            raise ValueError(
+                f"This adapter was saved with positive_class = "
+                f"{extra.get('positive_class')!r}, but the loaded module defines "
+                f"POSITIVE_CLASS = {POSITIVE_CLASS!r}. Loading it would silently invert "
+                f"every prediction."
+            )
+{% endif %}
+
+{% endif %}
+{% if target_type == "regression" %}
+    def on_fit_start_hook(self) -> None:
+        targets = self._training_targets()
+        if targets.numel() == 0:
+            raise RuntimeError(
+                f"The '{self.TASK_NAME}' training split is empty, so the target scaler "
+                f"cannot be fitted and every prediction would come back on the wrong scale."
+            )
+
+        self.scaler.fit(targets)
+
+    def _training_targets(self) -> torch.Tensor:
+        # Read labels directly rather than through a DataLoader: the dataset's tokens are
+        # unpadded (per-sequence length), so the default collate would fail to stack them,
+        # and only the labels are needed here anyway.
+        dataset = self.trainer.datamodule.train_dataset
+        labels = [dataset[i][1] for i in range(len(dataset))]
+        return torch.stack(labels).float().view(-1)
+
+{% endif %}
+    @staticmethod
+    def build_datamodule(cfg):
+        from adaptrna_custom.tasks.{{ task_name }}.datamodule import CsvDataModule
+
+        data = cfg["data"]
+        return CsvDataModule(
+            data_root=data["root"],
+            alphabet=Alphabet(),
+            batch_size=data.get("batch_size", 32),
+            num_workers=data.get("num_workers", 0),
+        )

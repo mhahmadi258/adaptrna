@@ -1,14 +1,19 @@
 """The knowledge base must keep carrying the load-bearing numbers: this suite fails
-loudly if an edit drops one, because the recommender has no other source for them."""
+loudly if an edit drops one, because the recommender has no other source for them.
+
+Phase 13: `arms:`/`universal:` are unchanged (validated across tasks, they transfer);
+`tasks:` is gone (there are no known tasks any more); `generic:` and `target_shapes.yaml`
+replace it.
+"""
 
 import pytest
 
 from adaptrna_agentic.knowledge import (
     arm,
+    derived,
+    generic_knowledge,
     load_knowledge,
-    task_knowledge,
-    template_for,
-    templates,
+    target_shape,
     universal,
 )
 
@@ -39,6 +44,11 @@ def test_full_ft_settings_and_failure_mode():
     assert "R^2" in destroyed["symptom"]
 
 
+def test_unknown_arm_raises():
+    with pytest.raises(KeyError, match="Unknown training arm"):
+        arm("no_such_arm")
+
+
 def test_precision_and_nondeterminism_note():
     assert universal()["trainer"]["precision"] == "bf16-mixed"
 
@@ -46,49 +56,79 @@ def test_precision_and_nondeterminism_note():
     assert "95.21" in note and "95.82" in note
 
 
-@pytest.mark.parametrize("task", ["splice_site", "mrl", "sec_struct"])
-def test_every_task_has_metric_and_tolerance(task):
-    knowledge = task_knowledge(task)
+# ---------------------------------------------------------------------- generic:
 
-    assert knowledge["primary_metric"].startswith("test/")
-    assert knowledge["reference"]["tolerance"] > 0
-    assert knowledge["higher_is_better"] is True
+def test_generic_has_no_reference_band():
+    """There are no known tasks any more; a band is a property of a task and a dataset
+    and cannot be invented."""
+    reference = generic_knowledge()["reference"]
 
-
-def test_splice_site_reference_band_and_tolerance():
-    reference = task_knowledge("splice_site")["reference"]
-
-    low, high = reference["band"]
-    assert low <= 95.82 <= high          # published donor LoRA F1
-    assert low <= 97.48 <= high          # this repo's own donor run
-    assert reference["tolerance"] == 1.0  # FlashAttention non-determinism
+    assert reference["band"] is None
+    assert reference["tolerance"] == 0.0
+    assert reference["sources"]
 
 
-def test_mrl_random7600_caveat_present():
-    caveats = " ".join(task_knowledge("mrl")["caveats"])
+def test_generic_caveats_state_the_first_run_is_a_baseline():
+    caveats = " ".join(generic_knowledge()["caveats"])
 
-    assert "random7600" in caveats
-    assert "holdout" in caveats
-    assert "early stopping" in caveats
+    assert "baseline" in caveats
 
 
-@pytest.mark.parametrize("task", ["splice_site", "mrl", "sec_struct"])
-def test_every_template_names_head_loss_metrics(task):
-    template = template_for(task)
+def test_derived_batch_size_rule():
+    rule = derived("batch_size")
 
-    assert template is not None
-    shape = template["shape"]
-    for key in ("head", "loss", "metrics", "extract_features", "predict_output"):
-        assert shape.get(key), f"{task} template missing {key}"
-    assert template["data_layout"]["description"]
+    assert rule["rule"] == "piecewise_on_median_length"
+    assert rule["table"] == [[128, 64], [512, 32], [1024, 16], [2048, 8]]
+    assert rule["fallback"] == 4
+    assert rule["why"]
 
 
-def test_templates_cover_the_shipped_tasks():
-    assert {t["task"] for t in templates()} == {"splice_site", "mrl", "sec_struct"}
+def test_derived_max_epochs_rule():
+    rule = derived("max_epochs")
+
+    assert rule["target_steps"] == [1000, 10000]
+    assert rule["clamp"] == [1, 20]
+    assert rule["why"]
 
 
-def test_no_match_guidance_is_honest_about_new_datamodules():
-    guidance = load_knowledge()["no_match_guidance"]
+def test_derived_num_workers_rule():
+    rule = derived("num_workers")
 
-    assert "three files" in guidance
-    assert "does not yet automate" in guidance
+    assert rule["value"] == 8
+    assert rule["why"]
+
+
+def test_unknown_derivation_rule_raises():
+    with pytest.raises(KeyError, match="No derivation rule"):
+        derived("no_such_rule")
+
+
+# ---------------------------------------------------------------------- target_shapes.yaml
+
+@pytest.mark.parametrize("target_type", ["binary", "multiclass", "regression"])
+def test_every_target_shape_names_head_loss_metrics(target_type):
+    shape = target_shape(target_type)
+
+    for key in ("head", "loss", "metrics", "extract_features", "predict_output",
+                "primary_metric", "adapter_state"):
+        assert shape.get(key), f"{target_type} shape missing {key}"
+    assert isinstance(shape["pad_sensitive"], bool)
+
+
+def test_regression_is_pad_sensitive_and_binary_is_not():
+    assert target_shape("regression")["pad_sensitive"] is True
+    assert target_shape("binary")["pad_sensitive"] is False
+    assert target_shape("multiclass")["pad_sensitive"] is False
+
+
+def test_binary_adapter_state_names_positive_class():
+    assert "positive_class" in target_shape("binary")["adapter_state"]
+
+
+def test_unknown_target_type_raises_naming_the_supported_ones():
+    with pytest.raises(KeyError, match="binary"):
+        target_shape("per_position")
+
+
+def test_target_shapes_cover_exactly_the_three_supported_types():
+    assert set(load_knowledge()["target_shapes"]) == {"binary", "multiclass", "regression"}

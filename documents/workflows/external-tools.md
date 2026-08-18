@@ -1,14 +1,14 @@
 # External Tools (flow E)
 
-Classical, non-neural bioinformatics packages wrapped as typed functions, sharing the same
-manifest and the same lifecycle as adapter tools.
+Classical, non-neural packages wrapped as typed functions, sharing the same manifest and the
+same lifecycle as adapter tools.
 
 ---
 
 ## Contents
 
 1. [What an external tool is](#1-what-an-external-tool-is)
-2. [Registering the reference tool](#2-registering-the-reference-tool)
+2. [Registering a wrapper](#2-registering-a-wrapper)
 3. [The approval-gated install](#3-the-approval-gated-install)
 4. [Using it](#4-using-it)
 5. [Writing a wrapper by hand](#5-writing-a-wrapper-by-hand)
@@ -29,19 +29,22 @@ Three parts:
 * **golden smoke tests** — a known input and its expected output, captured against the
   installed version.
 
-Each *function* becomes its own tool entry, named `<family>_<function>`, so ViennaRNA's two
-functions register as `vienna_fold` and `vienna_cofold`. From there they are indistinguishable
-from adapter tools: same manifest, same `activate`/`deactivate`/`test`, same appearance in
-`list_tools`, same binding into the orchestrator.
+Each *function* becomes its own tool entry, named `<family>_<function>`, so a wrapper family
+named `fold` with functions `predict` and `predict_pair` would register as `fold_predict` and
+`fold_predict_pair`. From there they are indistinguishable from adapter tools: same manifest,
+same `activate`/`deactivate`/`test`, same appearance in `list_tools`, same binding into the
+orchestrator.
 
 Wrapped packages are **tool dependencies**: installed into the venv through the gated flow,
 recorded in the manifest provenance, and deliberately absent from every `pyproject.toml`.
 
-## 2. Registering the reference tool
+## 2. Registering a wrapper
+
+Once you have a wrapper module — written by hand (§5) or generated (§6) and landed at
+`adaptrna_custom/tools/<name>.py` — register its functions as tools:
 
 ```bash
-python -m adaptrna_agentic.cli.toolhub register-external \
-    adaptrna_agentic.toolhub.external.vienna
+python -m adaptrna_agentic.cli.toolhub register-external adaptrna_custom.tools.<your_tool>
 ```
 
 What happens:
@@ -55,16 +58,16 @@ What happens:
 4. The whole batch is refused before anything is written if any tool name already exists.
 
 ```
-Registered 'vienna_fold' — Predict the minimum-free-energy secondary structure of one RNA
-                           sequence. Returns the dot-bracket structure and its free energy…
-Registered 'vienna_cofold' — Predict the minimum-free-energy structure of two RNA strands…
+Registered 'fold_predict' — Predict the minimum-free-energy secondary structure of one
+                             sequence. Returns the dot-bracket structure and its free energy…
+Registered 'fold_predict_pair' — Predict the minimum-free-energy structure of two strands…
 ```
 
 ## 3. The approval-gated install
 
 ```
-Package 'ViennaRNA' (import 'RNA') is not installed.
-Would run: /home/you/adaptrna/.venv/bin/python -m pip install ViennaRNA
+Package 'YourPackage' (import 'your_import') is not installed.
+Would run: /home/you/adaptrna/.venv/bin/python -m pip install YourPackage
 Proceed with the install? [y/N]
 ```
 
@@ -72,7 +75,7 @@ Same "Would run:" discipline as the training gate — the exact command, before 
 `--yes` approves non-interactively. A non-TTY without `--yes` **declines**:
 
 ```
-error: Install not approved. Install it yourself with `… -m pip install ViennaRNA`,
+error: Install not approved. Install it yourself with `… -m pip install YourPackage`,
        or rerun with --yes.
 ```
 
@@ -87,20 +90,18 @@ with the exact command to run, because the CLI owns the gate.
 ## 4. Using it
 
 ```bash
-$toolhub call vienna_fold sequence=GGGGAAAACCCC
+$toolhub call fold_predict sequence=GGGGAAAACCCC
 # {"structure": "((((....))))", "mfe": -5.4}
 
-$toolhub call vienna_cofold sequence_a=GGGGGGGG sequence_b=CCCCCCCC
-$toolhub call vienna_fold --args '{"sequence": "GGGGAAAACCCC"}'
-
-$toolhub test vienna_fold        # the golden cases; exit code 1 if any fail
+$toolhub call fold_predict --args '{"sequence": "GGGGAAAACCCC"}'
+$toolhub test fold_predict        # the golden cases; exit code 1 if any fail
 ```
 
 In chat, they are simply tools:
 
 ```
 you> Fold GGGGAAAACCCC and tell me if it's a hairpin.
-  → vienna_fold({sequence: "GGGGAAAACCCC"})
+  → fold_predict({sequence: "GGGGAAAACCCC"})
     = {"structure": "((((....))))", "mfe": -5.4}
 Yes — four base pairs closing a four-nucleotide loop, at −5.4 kcal/mol.
 ```
@@ -108,7 +109,7 @@ Yes — four base pairs closing a four-nucleotide loop, at −5.4 kcal/mol.
 Over HTTP, external tools use `/call` (not `/predict`):
 
 ```bash
-curl -s -X POST localhost:8000/api/tools/vienna_fold/call \
+curl -s -X POST localhost:8000/api/tools/fold_predict/call \
      -H 'content-type: application/json' -d '{"args": {"sequence": "GGGGAAAACCCC"}}'
 ```
 
@@ -118,77 +119,99 @@ kwargs paying off.
 
 ## 5. Writing a wrapper by hand
 
-[`toolhub/external/vienna.py`](../../agentic/adaptrna_agentic/toolhub/external/vienna.py) is
-the reference. The contract is in
-[`contract.py`](../modules/toolhub.md#5-external--non-neural-tools):
+There is no shipped wrapper to imitate any more — the contract in
+[`contract.py`](../../agentic/adaptrna_agentic/toolhub/external/contract.py) is the whole
+teaching surface, and it stands on its own:
+
+```python
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional, Tuple
+
+@dataclass(frozen=True)
+class PackageSpec:
+    pip: str            # distribution name, e.g. "YourPackage"
+    import_name: str    # top-level module it provides, e.g. "your_import"
+
+@dataclass(frozen=True)
+class GoldenCase:
+    args: Dict[str, Any]
+    expect: Dict[str, Any]
+
+@dataclass(frozen=True)
+class FunctionSpec:
+    name: str
+    description: str
+    golden: Tuple[GoldenCase, ...] = ()
+
+@dataclass(frozen=True)
+class ExternalToolSpec:
+    name: str                              # family prefix: tools register as <name>_<fn>
+    description: str
+    package: PackageSpec
+    functions: Tuple[FunctionSpec, ...]
+```
+
+A wrapper module must:
+
+1. **define `SPEC: ExternalToolSpec` at module level** — the declarative description of the
+   tool family: its package, its functions, and their golden test cases;
+2. **define one module-level callable per declared function**, taking JSON-scalar keyword
+   arguments and returning a JSON-serialisable dict — `contract.load_spec` checks every
+   `FunctionSpec.name` in `SPEC.functions` resolves to a real, callable module attribute, and
+   refuses to register the module otherwise;
+3. **validate inputs before importing the wrapped package**, so a missing package fails at
+   the call boundary with the install hint (rather than a bare `ImportError` from deep
+   inside), and validation tests can run without the package installed at all.
+
+`agentic/tests/fixtures/validating_external.py` is a small, fully contract-compliant wrapper
+that exists to demonstrate exactly this shape end to end — worth reading as a template for
+the mechanics, independent of what package you are actually wrapping:
 
 ```python
 from adaptrna_agentic.toolhub.external.contract import (
     ExternalToolSpec, FunctionSpec, GoldenCase, PackageSpec)
 
-_VALID_BASES = set("ACGU")
-
-def _clean(sequence: str, label: str = "sequence") -> str:
+def _clean(text: str, label: str = "text") -> str:
     """Validate + normalise. Runs BEFORE any import of the wrapped package."""
-    seq = (sequence or "").strip().upper().replace("T", "U")
-    if not seq:
-        raise ValueError(f"Empty {label}: provide at least one base (A, C, G, U or T).")
-    invalid = sorted(set(seq) - _VALID_BASES)
-    if invalid:
-        raise ValueError(f"Invalid characters {invalid} in {label}; expected only A, C, G, U or T.")
-    return seq
+    value = (text or "").strip()
+    if not value:
+        raise ValueError(f"Empty {label}: provide at least one character.")
+    if not value.isprintable():
+        raise ValueError(f"Non-printable characters in {label}.")
+    return value
 
-def fold(sequence: str) -> dict:
-    """Minimum-free-energy secondary structure of one RNA sequence."""
-    seq = _clean(sequence)
+def checksum(text: str) -> dict:
+    """CRC32 checksum of one string."""
+    value = _clean(text)
 
-    import RNA                       # AFTER validation — deliberately
+    import zlib                      # AFTER validation — deliberately
 
-    structure, mfe = RNA.fold(seq)
-    return {"structure": structure, "mfe": round(float(mfe), 2)}
+    return {"crc32": zlib.crc32(value.encode("utf-8"))}
 
 SPEC = ExternalToolSpec(
-    name="vienna",                                   # the family prefix
-    description="Thermodynamic RNA secondary-structure prediction via ViennaRNA.",
-    package=PackageSpec(pip="ViennaRNA", import_name="RNA"),
+    name="checksum",
+    description="CRC32 checksums over text, via the stdlib zlib module.",
+    package=PackageSpec(pip="stdlib", import_name="zlib"),
     functions=(
         FunctionSpec(
-            name="fold",
-            description="…what the MODEL reads to decide whether to call this…",
-            golden=(
-                GoldenCase(args={"sequence": "AAAAAAAAAAAA"},
-                           expect={"structure": "............",
-                                   "mfe": {"approx": 0.0, "tol": 0.01}}),
-                GoldenCase(args={"sequence": "GGGGAAAACCCC"},
-                           expect={"structure": "((((....))))",
-                                   "mfe": {"approx": -5.4, "tol": 0.5}}),
-            ),
+            name="checksum",
+            description="CRC32 checksum of one string.",
+            golden=(GoldenCase(args={"text": "hello"}, expect={"crc32": 907060870}),),
         ),
     ),
 )
 ```
 
-### The three rules
-
-1. **`SPEC` at module level**, typed as `ExternalToolSpec`.
-2. **One module-level callable per declared function**, taking JSON-scalar keyword arguments
-   and returning a JSON-serialisable dict.
-3. **Validate inputs before importing the wrapped package**, so a missing package fails at
-   the call boundary with the install hint, and validation tests run without it installed.
-
 ### Golden cases
 
 `expect` values compare exactly; `{"approx": x, "tol": t}` compares within tolerance. They
-are **captured against the installed version, never guessed** — and the strongest ones mix
-two kinds of evidence:
+are **captured against the installed version, never guessed** — the strongest ones mix two
+kinds of evidence:
 
 | Kind | Example | Why it is good |
 |---|---|---|
-| *a priori* | `AAAA…` → all dots, 0.0 | A homopolymer cannot pair with itself. True of any correct implementation. |
-| captured | `GGGGAAAACCCC` → `((((....))))` at −5.4 | Pins the actual behaviour of ViennaRNA 2.7.2 |
-
-The cofold golden documents a non-obvious detail worth copying: the returned structure spans
-both strands **with the `&` dropped**, so 8+8 bases give a 16-character string.
+| *a priori* | a value you can derive by hand or reason about without running the package | True of any correct implementation |
+| captured | a value read off one real run of the installed package | Pins the actual behaviour of the version you have |
 
 Function `description` is what the orchestrator reads when deciding whether to call the tool
 — write it for that audience.
@@ -196,14 +219,16 @@ Function `description` is what the orchestrator reads when deciding whether to c
 ## 6. Generating one
 
 ```
-you> Wrap the ViennaRNA package so I can fold sequences.
-  → create_external_tool({name: "vienna", package: "ViennaRNA",
+you> Wrap YourPackage so I can call it.
+  → create_external_tool({name: "fold", package: "YourPackage",
                           description: "MFE structure prediction"})
 ```
 
-The ToolSmith is given the **full text of `contract.py` and of `vienna.py`** as the reference
-to imitate, plus the instruction that golden cases must be values it is confident about a
-priori — never invented numbers.
+The ToolSmith is given the **full text of `contract.py`** as the specification to satisfy —
+there is no shipped wrapper handed over as a reference implementation any more (the same
+reasoning that removed the shipped task shown to the task generator, D2 in
+[the phase plan](../../plans/PHASE_13_COLD_START_SINGLE_CSV.md)) — plus the instruction that
+golden cases must be values it is confident about a priori, never invented numbers.
 
 Verification differs from the task flow, deliberately:
 
@@ -227,8 +252,8 @@ When you approve `land_generated_code`, two things happen atomically:
    once**, with no manual follow-up step.
 
 ```
-approve → write adaptrna_custom/tools/vienna.py
-        → register vienna_fold, vienna_cofold
+approve → write adaptrna_custom/tools/fold.py
+        → register fold_predict, fold_predict_pair
         → both tools are live
 ```
 
@@ -248,12 +273,12 @@ python -m adaptrna_agentic.cli.toolhub register-external adaptrna_custom.tools.<
 | Path | Role |
 |---|---|
 | [`toolhub/external/contract.py`](../../agentic/adaptrna_agentic/toolhub/external/contract.py) | The contract, the loader, install helpers, the golden runner |
-| [`toolhub/external/vienna.py`](../../agentic/adaptrna_agentic/toolhub/external/vienna.py) | The hand-written reference, and the codegen template |
+| [`agentic/tests/fixtures/validating_external.py`](../../agentic/tests/fixtures/validating_external.py) | A minimal, tested, contract-compliant wrapper — worth reading for the mechanics |
 | `Registry.register_external` | Spec → one manifest entry per function |
 | `cli/toolhub.py::cmd_register_external` | The install gate |
 | `agents/tool_factory.py::_external_tool` | Manifest entry → LangChain tool |
 | `api/routers/tools.py::call_tool` | `POST /api/tools/{name}/call` |
-| `adaptrna_custom/tools/` | Where generated wrappers land |
+| `adaptrna_custom/tools/` | Where wrappers — hand-written or generated — land |
 
 The manifest entry for an external tool records `{module, function, package: {pip,
 import_name, installed_version}}` plus the copied golden cases —
@@ -263,11 +288,11 @@ import_name, installed_version}}` plus the copied golden cases —
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| `does not define SPEC: ExternalToolSpec` | Not a wrapper module | Follow the contract; see `vienna.py` |
+| `does not define SPEC: ExternalToolSpec` | Not a wrapper module | Follow the contract in §5 |
 | `SPEC … declares function 'x' but the module does not define it` | Spec and code disagree | Define it, or drop it from `SPEC` |
 | `Package 'X' (import 'y') is not installed` | The gate, refusing to install unasked | Run the printed command, or rerun with `--yes` |
 | `Install failed (…)` | pip failed; the last 2000 chars of stderr are included | Usually a build dependency |
-| `'vienna_fold' is already registered` | Name collision | `toolhub remove vienna_fold` first, or use `--only` for a subset |
+| `'x_fn' is already registered` | Name collision | `toolhub remove x_fn` first, or use `--only` for a subset |
 | `toolhub test` fails after an upgrade | The goldens were captured against an older version | Re-verify the values by hand, then update the wrapper's `SPEC` **and** re-register, since goldens are copied into the manifest at registration |
 | `doctor` reports `external_tools` FAIL | A registered tool's package is no longer importable | Reinstall the package, or remove the tool |
 | `Tool 'x' is disabled` | Routing-level deactivation | `toolhub activate x`, or just ask in chat |

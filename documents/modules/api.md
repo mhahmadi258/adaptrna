@@ -209,7 +209,7 @@ detached process appends to, so a tail read on a timer is the whole mechanism.
 | `DELETE` | `/api/sessions/{id}` | `{deleted: id}`. Irreversible; reuses `prune.delete_session`, so there is one deletion path, not two |
 | `GET` | `/api/sessions/{id}/history` | `{session, messages, pending_approval}` |
 | `POST` | `/api/sessions/{id}/messages` | Body `{text}` → **SSE stream**. Refuses (409) if the session is already waiting on an approval. |
-| `POST` | `/api/sessions/{id}/resume` | Body `{approved, note?}` → **a new SSE stream** continuing the same turn. Refuses (409) if nothing is pending. |
+| `POST` | `/api/sessions/{id}/resume` | Body `{approved, note?, edits?}` → **a new SSE stream** continuing the same turn. Refuses (409) if nothing is pending. |
 
 SSE responses carry `Cache-Control: no-cache`, `Connection: keep-alive`, and
 `X-Accel-Buffering: no` — proxies otherwise buffer SSE into uselessness.
@@ -238,7 +238,7 @@ sequenceDiagram
     S-->>B: event: approval_required {summary, details.command}
     S-->>B: (stream ENDS)
     Note over B,CK: minutes may pass · a refresh restores the dialog<br/>from GET /history's pending_approval
-    B->>S: POST /resume {approved: true}
+    B->>S: POST /resume {approved: true, edits?}
     S->>G: stream_turn(Command(resume=…))
     G-->>B: event: tool_result …
     G-->>B: event: text …
@@ -253,6 +253,17 @@ Why the stream ends rather than staying open:
 The client decides and calls `/resume`, which returns a **new** stream continuing the same
 turn — which is why [`ui/app.js`](web-ui.md) has no separate resume path: `consume()` is
 simply called again.
+
+`ResumeRequest.edits` (`api/schemas.py`, Phase 13 §5) is an optional `dict[str, Any]` of
+dotted-path corrections to the gated call's own arguments — e.g. `{"spec.task_name":
+"donor_sites"}` — passed straight through to `Command(resume={"approved": ..., "note": ...,
+"edits": ...})`. Absent or `{}` means "as proposed", which is what every gate that predates
+Phase 13 already sends, so no existing caller needed to change. The server does no
+validation of its own: `orchestrator._apply_edits` (called inside the graph, from
+`run_tools`) is the single place edits are whitelist-checked and type-checked against the
+gated tool's `EDITABLE_ARGS`, so the same rules apply whether the edit arrived from the
+terminal or over HTTP. See [agents.md](agents.md#4-the-approval-gate) for the mechanism and
+[web-ui.md](web-ui.md) for how the browser collects the values.
 
 ## 7. Security posture
 

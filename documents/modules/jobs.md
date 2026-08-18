@@ -37,7 +37,7 @@ process reconstructs everything from disk instead.
 ## 2. `train_entrypoint.py` — the seam
 
 ```
-python -m adaptrna_agentic.jobs.train_entrypoint --task splice_site --use_lora ...
+python -m adaptrna_agentic.jobs.train_entrypoint --task <your_task> --use_lora ...
 ```
 
 Every training job is launched through here rather than through
@@ -73,8 +73,8 @@ JobStore(jobs_dir=None)
 ```
 
 The job **id is the output directory's basename**, which is why run names carry a timestamp
-(`splice_site_acceptor_lora_20260812_185058`) — it makes ids unique and human-readable, and
-lets `analyze_run` find the run from the id alone.
+(`my_task_lora_20260812_185058`) — it makes ids unique and human-readable, and lets
+`analyze_run` find the run from the id alone.
 
 Storing the whole `plan` on the record is deliberate: it keeps a run analysable later —
 including its `primary_metric` and reference band — even if its task can no longer be
@@ -106,7 +106,7 @@ JobRunner(store=None, jobs_dir=None)
 
 Note what `start` does **not** do: it does not validate the plan's contents. The
 `plan["source"]` check lives one level up in
-[`tool_factory.start_training`](agents.md#the-16-management-tools), so that a Python caller
+[`tool_factory.start_training`](agents.md#the-17-management-tools), so that a Python caller
 constructing a plan by hand is not blocked while the *model* is.
 
 ### `_refresh(record)`
@@ -208,8 +208,9 @@ number. The LLM narrates this report; it does not judge the run.
    comparable to the reference metrics for this task"* — and skips the band comparison
    entirely.
 2. **A difference inside the task's tolerance is not a regression.** FlashAttention's
-   backward pass is non-deterministic; the same splice-site command and seed produced F1
-   95.21 and 95.82.
+   backward pass is non-deterministic; the same command and seed, run twice against the
+   same task, produced two primary-metric values a few tenths apart rather than identical
+   ones.
 
 ### The checks
 
@@ -223,6 +224,22 @@ number. The LLM narrates this report; it does not judge the run.
 | Below the reference band | `value < low - tolerance` | warning + *"confirm with a second seed or data split before concluding anything"* |
 | Above the reference band | `value > high + tolerance` | note — *"good, but worth confirming there is no leakage between splits"* |
 | No band recorded | `band is None` | compare against `previous_best(...)` instead |
+
+**Since Phase 13, the band rows above are dead code, not dead documentation.** They stay in
+the table because the *mechanism* is real and unchanged — a knowledge-base entry that
+carries a validated `reference.band` still drives exactly this comparison — but the platform
+now ships no task with one: every task is either built from `generic:` (Phase 13's
+cold-start knowledge base entry, whose `reference.band` is permanently `null`,
+[profiling-and-knowledge.md](profiling-and-knowledge.md)) or, for a run launched outside the
+agentic layer entirely, has no plan at all. So in practice `analyze_run` **always** takes the
+`band is None` branch today: every finished run is compared only against
+`previous_best(task, arm, primary_metric)` — this project's own earlier succeeded,
+non-truncated runs of the same task and arm — and reported as a baseline, explicitly *"a
+comparison with an earlier run of this project, not a validated reference"* (§"Baselines for
+unknown tasks" below). The first run of any newly built task has no such history either, so
+it is reported as *"this run is the baseline for future ones"*. The band path is what would
+run again the day a knowledge-base entry ships a validated band for some task — nothing
+about the code needs to change for that to happen, only the data it reads.
 
 ### Divergence vs "not logged here"
 

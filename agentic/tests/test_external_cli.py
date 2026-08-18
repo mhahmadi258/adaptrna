@@ -99,8 +99,8 @@ def test_call_on_adapter_points_to_predict(data_dir, nano_splice_adapter, capsys
     run(data_dir, "register", str(nano_splice_adapter))
     capsys.readouterr()
 
-    assert run(data_dir, "call", "splice_site", "sequence=ACGU") == 1
-    assert "toolhub predict splice_site" in capsys.readouterr().err
+    assert run(data_dir, "call", "demo_binary", "sequence=ACGU") == 1
+    assert "toolhub predict demo_binary" in capsys.readouterr().err
 
 
 def test_golden_test_via_cli(data_dir, capsys):

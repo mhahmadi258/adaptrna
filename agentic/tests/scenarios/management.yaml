@@ -4,7 +4,7 @@ description: |
   activate-and-use-in-one-turn). Every toggle suspends at the approval gate; a disabled
   tool refuses with a message that does *not* tell the model to fix it itself; declining
   an activation leaves the tool off — the bug this flow exists to catch.
-tools: [splice_site, dummy]
+tools: [demo_binary, dummy]
 turns:
   - user: Turn off dummy_add, then try to use it.
     script:

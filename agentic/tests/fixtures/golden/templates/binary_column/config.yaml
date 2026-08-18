@@ -1,0 +1,25 @@
+# rendered by adaptrna template v2 from spec.json
+task: binary_column
+
+head:
+  hidden_dim: 32
+
+data:
+  root: "/home/user/data/example.csv"
+  batch_size: 32
+  num_workers: 0
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3
+
+optim:
+  name: adamw
+  lr: 3.0e-4
+
+trainer:
+  max_epochs: 1
+  precision: bf16-mixed
+  gradient_clip_val: 1.0

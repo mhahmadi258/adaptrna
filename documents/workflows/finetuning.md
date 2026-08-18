@@ -1,10 +1,11 @@
-# Fine-tuning a New Adapter Tool (flow C)
+# Fine-tuning an Adapter Tool from One CSV (flow C)
 
-Data in → a validated configuration → your approval → a GPU run → an analysed result → your
-approval → a servable tool.
+One CSV in → your approved interpretation → a built and verified task → your approval → a
+validated training plan → your approval → a GPU run → an analysed result → your approval →
+a servable tool.
 
-This is the platform's headline scenario. Everything in it is deterministic except the
-narration.
+Four steps, four separate gates. Everything in it is deterministic except the narration, and
+approval at one gate never implies the next — each step is its own request.
 
 ---
 
@@ -12,26 +13,27 @@ narration.
 
 1. [The conversation](#the-conversation)
 2. [Step 1 — profile](#step-1--profile)
-3. [Step 2 — recommend](#step-2--recommend)
-4. [Step 3 — the approval gate](#step-3--the-approval-gate)
-5. [Step 4 — the run](#step-4--the-run)
-6. [Step 5 — analyse](#step-5--analyse)
-7. [Step 6 — register](#step-6--register)
-8. [Driving it from the browser](#driving-it-from-the-browser)
-9. [Doing it without the agent](#doing-it-without-the-agent)
-10. [What can go wrong](#what-can-go-wrong)
+3. [Step 2 — build](#step-2--build)
+4. [Step 3 — recommend and train](#step-3--recommend-and-train)
+5. [Step 4 — analyse and serve](#step-4--analyse-and-serve)
+6. [Driving it from the browser](#driving-it-from-the-browser)
+7. [Doing it without the agent](#doing-it-without-the-agent)
+8. [What can go wrong](#what-can-go-wrong)
 
 ---
 
 ## The conversation
 
 ```
-you> My Spliceator data is at ~/data/train_data — what's in it?
-you> Recommend a fine-tuning setup for the acceptor arm.
-you> Run it.                     ← approval gate: shows the exact command, waits for [y/N]
-you> How's it going?             ← the job runs detached; the chat stays responsive
+you> Profile ~/data/my_data.csv.
+                                    ← gate 1: columns, target type, split, warnings — edit or approve
+you> Build the task.
+                                    ← gate 2: the code (rendered or generated), harness result — approve
+you> Recommend a training config and run it.
+                                    ← gate 3: the exact command, editable hyperparameters — approve
+you> How's it going?               ← the job runs detached; the chat stays responsive
 you> Analyze the run.
-you> Register it as splice_site_acceptor.        ← approval gate
+you> Register it as my_task.       ← gate 4
 ```
 
 ```mermaid
@@ -42,15 +44,20 @@ sequenceDiagram
     participant S as Deterministic services
     participant G as GPU (detached)
 
-    U->>O: where is my data?
+    U->>O: profile my_data.csv
     O->>S: profile_dataset(path)
-    S-->>U: shape, lengths, target type, which task can read it
-    U->>O: recommend a setup
-    O->>S: recommend_training_config(...)
-    S-->>U: plan + rationale, every number from the knowledge base
-    U->>O: run it
-    O-->>U: ⛔ APPROVAL — the exact command
-    U->>O: yes
+    S-->>U: ⛔ GATE 1 — confirm_data_profile: columns, target type, split, warnings
+    U->>O: approve (optionally with edits)
+    O->>S: confirm_data_profile(spec)
+    U->>O: build the task
+    O->>S: create_task_tool(spec)   [renders, or falls back to generation; harness + review]
+    S-->>U: ⛔ GATE 2 — land_generated_code: the files, the diff
+    U->>O: approve
+    O->>S: land_generated_code(stage_id)
+    U->>O: recommend a config and run it
+    O->>S: recommend_training_config(task)
+    S-->>U: ⛔ GATE 3 — start_training: exact command, editable hyperparameters
+    U->>O: approve
     O->>S: start_training(plan)   [refuses an unstamped plan]
     S->>G: detached subprocess
     loop while running
@@ -61,87 +68,141 @@ sequenceDiagram
     O->>S: analyze_run(job_id)
     S-->>U: verdict + reasons + remedies
     U->>O: register it
-    O-->>U: ⛔ APPROVAL — a new servable tool
-    U->>O: yes
+    O-->>U: ⛔ GATE 4 — register_trained_adapter: a new servable tool
+    U->>O: approve
     O->>S: register_trained_adapter(job_id, name)
 ```
+
+Each `⛔` is a separate turn: the orchestrator is instructed to report what a gate produced
+and stop, not to chain into the next step on its own (D10, plan §2).
 
 ---
 
 ## Step 1 — profile
 
 `profile_dataset(path)` →
-[`profiling/profiler.py`](../modules/profiling-and-knowledge.md#3-profilerpy--describing-a-dataset).
+[`profiling/profiler.py`](../modules/profiling-and-knowledge.md#3-profilerpy--one-table-in-a-datasetspec-out).
 
-Deterministic and LLM-free. It reports the shape it sees and names the task that can read it:
+Accepts exactly one delimited table — `.csv`, `.tsv`, or either gzipped — with one sequence
+column and one label column whose target is binary, multiclass (≤20 classes) or a continuous
+regression value. A directory, a FASTA file, multiple files, per-position labels, or more
+free-text classes than that are refused by name, with what is supported stated plainly:
 
 ```json
 {
-  "path": "/home/you/data/train_data",
-  "kind": "directory",
-  "folds": ["db_1", "…", "db_10"],
-  "ss_types": ["acceptor", "donor"],
-  "splits": {"Train_acceptor_400.csv": 19775, "Val_acceptor_400.csv": 4944},
-  "length_min": 400, "length_median": 400, "length_max": 400,
-  "alphabet": "dna",
-  "target_type": "binary",
-  "layout_match": "splice_site",
-  "layout_reason": "Found ['GS_1'] under '…' — the layout the 'splice_site' task reads…"
+  "path": "/home/you/data/my_data.csv",
+  "sequence_column": "sequence", "label_column": "label",
+  "target_type": "binary", "classes": ["0", "1"], "positive_class": "1",
+  "length": {"min": 400, "median": 400, "max": 400}, "alphabet": "dna",
+  "split": {"mode": "random", "fractions": {"train": 0.8, "val": 0.1, "test": 0.1},
+            "row_counts": {"train": 19350, "val": 2419, "test": 2419}},
+  "task_name": "my_task",
+  "warnings": ["1,204 sequences (5.0%) appear more than once in the file; …"],
+  "similar_tasks": []
 }
 ```
 
-`layout_match` is the branch point: a task name means flow C can proceed; `null` means no
-shipped task can read this layout and you want [flow D](new-task-codegen.md) first.
+`confirm_data_profile` is gate 1 — a real gated tool on the interpretation, not a
+conversational "shall I proceed?". The gate shows the file, the chosen columns, class
+counts (or the regression target's range), the split's real row counts, and every quality
+warning **as computed**, never summarised away:
 
-> The profiler will not reshape your file into some upstream layout to make it fit. Silently
-> doing that is how you get confidently wrong numbers later.
+```
+  ┌─ approval required ──────────────────────────────────────────
+  │ Use column 'sequence' as the sequence and 'label' as a binary target from my_data.csv
+  │ (24,188 rows → 19,350/2,419/2,419 train/val/test), and build task 'my_task'
+  │   file:      /home/you/data/my_data.csv  (24,188 rows, 5 columns)
+  │   sequence:  sequence          400 nt (min 400, max 400), dna
+  │   label:     label             binary — 0: 12,094 · 1: 12,094 (positive: '1')
+  │   ignored:   gene_id, source, chrom
+  │   split:     random 80/10/10, seed 42, stratified → 19,350 / 2,419 / 2,419
+  │   head:      linear classifier on the CLS token · BCE-with-logits · f1_score
+  │   task:      my_task
+  │   ! 1,204 sequences (5.0%) appear more than once in the file; …
+  └──────────────────────────────────────────────────────────────
+  edit a field, or approve? [field=value … | y/N]
+```
 
-## Step 2 — recommend
+Any field can be corrected before approving — the sequence/label column, `target_type`,
+`positive_class`, `task_name`, `tool_description`, or any part of the split (§5, "Approval
+decisions that carry edits" in the phase plan). On approval the spec is **re-validated and
+recomputed against the file**, not merely accepted: a user who switches `target_type` from
+`regression` to `multiclass` gets recomputed `classes`, `class_counts`, `row_counts` and
+`head` that actually follow the new choice, never a spec that says one thing and trains
+another.
 
-`recommend_training_config(data_path, task=None, arm="lora", quick=False, seed=42,
-task_options=None)` →
-[`profiling/recommender.py`](../modules/profiling-and-knowledge.md#4-recommenderpy--the-plan).
+If a similarly-shaped task already exists (`spec["similar_tasks"]`), the gate mentions it as
+a suggestion — never a branch. Reusing it means skipping straight to step 3 with the
+existing task name; see
+[new-task-codegen.md §6](new-task-codegen.md#6-reuse-skipping-this-flow-entirely).
+
+## Step 2 — build
+
+`create_task_tool(spec)` turns the approved spec into three files — a task module, a
+datamodule, a config — plus a `spec.json` sidecar, and stages them for review.
+**The common case renders them deterministically from a template, with no model call**;
+generation is the fallback for a spec the template does not cover. Full explanation of both
+paths: [new-task-codegen.md](new-task-codegen.md).
+
+`land_generated_code` is gate 2 — file list, line counts, and the full diff, exactly as
+today. The tool result and the gate both say **which path produced the code**
+(`"path": "template"` or `"path": "generated"`), so you are never unsure whether a human
+wrote the logic you are approving.
+
+```
+you> Build the task.
+  → create_task_tool({spec: {...}})
+    = {"ok": true, "path": "template", "iterations": 1,
+       "harness": "task 'my_task': PASS\n  [ok  ] import: …",
+       "stage_id": "my_task-ab12cd34", "files": [...]}
+
+you> Land it.
+                                     ← gate 2: file list, line counts, staging path, diff
+```
+
+The task is discovered automatically on next use — no restart, no separate registration
+step. Its `spec.json` is what makes step 3's derived hyperparameters and reuse (§9 of the
+phase plan) possible after the session ends.
+
+## Step 3 — recommend and train
+
+`recommend_training_config(task, spec=None, arm="lora", quick=False, seed=42)` →
+[`profiling/recommender.py`](../modules/profiling-and-knowledge.md#7-recommenderpy--the-plan).
 
 Every hyperparameter comes from
-[`knowledge/hyperparameters.yaml`](../configuration.md#4-the-knowledge-base), **and so does
-every rationale line**, so the explanation you read and the config that runs cannot drift
-apart.
+[`knowledge/hyperparameters.yaml`](../configuration.md#4-the-knowledge-base) — the *arm*
+settings verbatim, batch size / epoch count / worker count **derived from the approved
+spec** the task landed with — and so does every rationale line, so what you read and what
+runs cannot drift apart. There is **no reference metric band** for a task this build has
+never seen before (`plan["reference"]["band"]` is always `null`); that is a real, permanent
+state, not something waiting to be filled in.
 
 ```python
 {"source": "recommend_training_config",
- "task": "splice_site", "arm": "lora",
- "config_path": "engine/configs/tasks/splice_site.yaml",
- "overrides": {"lm_config": "giga",
-               "pretrained_weights": "/home/you/.cache/rinalmo_pretrained/giga-v1.pt",
-               "data.root": "/home/you/data/train_data",
-               "data.test_root": "/home/you/data/test_data",
-               "data.ss_type": "acceptor",
+ "task": "my_task", "arm": "lora",
+ "config_path": "adaptrna_custom/tasks/my_task/config.yaml",
+ "overrides": {"lm_config": "giga", "pretrained_weights": "/home/you/.cache/…/giga-v1.pt",
+               "data.root": "/home/you/data/my_data.csv",
                "optim.lr": 0.0003, "optim.name": "adamw",
                "trainer.gradient_clip_val": 1.0, "trainer.precision": "bf16-mixed",
                "lora.r": 16, "lora.alpha": 32, "lora.dropout": 0.05, "lora.layer_stride": 3,
-               "trainer.max_epochs": 2},
+               "data.batch_size": 32, "trainer.max_epochs": 6, "data.num_workers": 8},
  "seed": 42,
- "output_dir": "outputs/splice_site_acceptor_lora_20260812_185058",
+ "output_dir": "outputs/my_task_lora_20260818_101810",
  "primary_metric": "test/f1_score",
- "reference": {"band": [95.8, 97.5], "tolerance": 1.0, "sources": [...]},
- "estimated_wall_clock": "~7 min",
+ "reference": {"band": null, "tolerance": 0.0,
+               "sources": ["No validated reference run: this task did not exist before "
+                           "your data."]},
+ "estimated_wall_clock": "unknown — no run of this task exists yet",
  "rationale": ["lr 3e-4 with gradient_clip_val 1.0 was stable across tasks…",
-               "layer_stride 3 adapts 11 of the 33 giga blocks and matched full fine-tuning…",
-               "Not optim.lr = 1e-3: Trains well to loss 0.126 by step ~325, then a gradient
-                spike collapses it into a constant-output state… Remedy: use lr 3e-4 …"],
- "warnings": ["Cross-species benchmark: train/validate on the Spliceator folds, test on a
-               different organism entirely (data.species)."],
+               "data.batch_size 32: activation memory on the giga backbone scales with "
+               "sequence length; measured on this machine…",
+               "trainer.max_epochs 6: 19,350 training rows at batch 32 is 605 steps per "
+               "epoch; 6 epochs ≈ 3,630 optimiser steps, inside the 1k-10k budget."],
+ "warnings": ["This task has no reference band. The first successful run becomes the "
+              "baseline that later runs of the same task are compared against."],
  "command": ["/…/python", "-m", "adaptrna_agentic.jobs.train_entrypoint", "--task", …]}
 ```
-
-### Useful arguments
-
-| Argument | Effect |
-|---|---|
-| `task_options={"ss_type": "acceptor"}` | Task-specific `data.*` choices, **validated** against the template's `key_options` — an invalid value is refused with the valid set |
-| `quick=True` | `trainer.max_steps=200`, `data.num_workers=8`, plus a warning. **A smoke test, not a result** — the analyzer will refuse to compare it to reference metrics |
-| `arm="full_ft"` | Allowed, with the warning that its ~2.6 GB export **cannot become a served tool** |
-| `task=` | Override the profile's match |
 
 ### Where the backbone comes from
 
@@ -151,24 +212,28 @@ against a different backbone than the hub serves could not be hosted alongside t
 tools. A hub with no checkpoint configured produces a warning, not a silent random-weights
 run.
 
-## Step 3 — the approval gate
+### The approval gate
 
 ```
   ┌─ approval required ──────────────────────────────────────────
-  │ Train splice_site (lora) — ETA ~7 min, output outputs/splice_site_acceptor_lora_…
+  │ Train my_task (lora) — ETA unknown, output outputs/my_task_lora_20260818_101810
   │   would run: /home/you/adaptrna/.venv/bin/python -m adaptrna_agentic.jobs.train_entrypoint
-  │              --task splice_site --config engine/configs/tasks/splice_site.yaml
-  │              --output_dir outputs/splice_site_acceptor_lora_20260812_185058 --seed 42
+  │              --task my_task --config adaptrna_custom/tasks/my_task/config.yaml
+  │              --output_dir outputs/my_task_lora_20260818_101810 --seed 42
   │              --use_lora --set lm_config=giga --set pretrained_weights=/… --set …
-  │   output:    outputs/splice_site_acceptor_lora_20260812_185058
-  │   ! Cross-species benchmark: train/validate on the Spliceator folds, test on a …
+  │   output:    outputs/my_task_lora_20260818_101810
+  │   ! This task has no reference band. The first successful run becomes the baseline …
   └──────────────────────────────────────────────────────────────
-  approve? [y/N]
+  edit a field, or approve? [field=value … | y/N]
 ```
 
-The command is shown **verbatim** — byte for byte what will be executed. Only `y`/`yes`
-approves; `EOF` and `Ctrl-C` decline. Declining ends it: the orchestrator is instructed to
-report the decline plainly and not retry.
+The command is shown **verbatim** — byte for byte what will be executed. You may edit
+`overrides.*`, `seed`, `arm` or `quick_run` before approving; an edit **rebuilds the
+command** so the gate never shows one thing and runs another, records
+`plan["human_overrides"]`, and — if your chosen value matches a recorded failure mode in the
+knowledge base — appends a warning naming it, e.g. *"optim.lr = 1e-3 is a recorded failure
+mode: trains well to loss 0.126 by step ~325, then a gradient spike collapses it into a
+constant-output state."* The gate re-renders after an edit and asks again.
 
 `start_training` then applies the rule that makes all of this meaningful:
 
@@ -177,15 +242,14 @@ if plan.get("source") != "recommend_training_config":
     raise ToolHubError("This plan did not come from recommend_training_config. …")
 ```
 
-so a model that hand-assembles a plan — which happens when the recommender refuses something
-— is rejected rather than trusted.
+so a model that hand-assembles a plan — which happens when the recommender refuses
+something — is rejected rather than trusted. A human override is a different actor with
+different authority: the stamp check is about the model, not about you.
 
-## Step 4 — the run
-
+Training then runs the same way it always has:
 [`jobs/runner.py`](../modules/jobs.md) launches it **detached**
-(`start_new_session=True`), so it survives the chat exiting. Only one job runs at a time
-unless `allow_concurrent` is passed: *two giga runs on one GPU is how you get an
-out-of-memory failure forty minutes in*.
+(`start_new_session=True`), so it survives the chat exiting, with the run directory, live
+metrics tail, and job-status/cancel surfaces unchanged from before this phase:
 
 ```
 outputs/<run_name>/
@@ -194,83 +258,43 @@ outputs/<run_name>/
 ├── run_summary.json         final metrics + per-stage GPU memory / iteration time
 ├── train.log                stdout + stderr
 ├── exit_code                written by the entrypoint in a `finally` block
-└── splice_site_adapter.pt   the ~6 MB artifact
+└── my_task_adapter.pt       the ~6 MB artifact
 ```
-
-Follow it from anywhere:
 
 ```
 you> How's it going?
-  → job_status({job_id: "splice_site_acceptor_lora_20260812_185058"})
+  → job_status({job_id: "my_task_lora_20260818_101810"})
     = {"state": "running", "progress": {"epoch": 1, "step": 400,
        "latest_metrics": {"train/loss": 0.08, "val/f1_score": 96.4}}}
 ```
 
-```bash
-curl -s localhost:8000/api/jobs/<id>            | jq
-curl -s localhost:8000/api/jobs/<id>/logs?tail=100 | jq -r .log
-tail -f outputs/<id>/metrics/version_0/metrics.csv
-```
-
-The browser's Jobs panel polls every 3 s and updates in place.
-
-Every job is launched through
-[`jobs/train_entrypoint.py`](../modules/jobs.md#2-train_entrypointpy--the-seam) rather than
-the engine CLI directly, so generated tasks are importable and `exit_code` always gets
-written.
-
-To stop one: `POST /api/jobs/{id}/cancel`, or `JobRunner.cancel(id)`. It refuses to signal a
-PID it cannot prove is still ours.
-
-## Step 5 — analyse
+## Step 4 — analyse and serve
 
 `analyze_run(job_id)` → [`jobs/analysis.py`](../modules/jobs.md#7-analysispy--the-runanalyzer).
 
 ```python
-{"task": "splice_site", "arm": "lora", "truncated": False,
+{"task": "my_task", "arm": "lora", "truncated": False,
  "metrics": {"train/loss": 0.031, "val/f1_score": 96.9, "test/f1_score": 96.71, …},
  "primary_metric": "test/f1_score", "primary_value": 96.71,
- "checks": ["test/f1_score = 96.71",
-            "test/f1_score = 96.71 is within the reference band 95.8–97.5 "
-            "(±1.0 for run-to-run non-determinism)"],
+ "checks": ["test/f1_score = 96.71 — no reference band for this task; treat this run as "
+            "the baseline"],
  "suggestions": [],
- "verdict": "ok"}
+ "verdict": "baseline"}
 ```
 
-**Two rules the analyzer exists to enforce:**
-
-1. A run truncated by `trainer.max_steps` is **never** compared to reference metrics — the
-   report says so explicitly, and the orchestrator is instructed never to present a truncated
-   smoke run as a real result.
-2. A difference inside the task's tolerance is **never** called a regression. FlashAttention's
-   backward pass is non-deterministic: the same splice-site command and seed produced F1
-   95.21 and 95.82.
-
-What it detects, and the remedy it attaches: non-finite loss → *lower the learning rate and
-set `gradient_clip_val`*; a degenerate primary metric → the arm's documented failure mode
-verbatim; a flatlined `train/loss` → the constant-output collapse signature; below the
-reference band → *confirm with a second seed or data split before concluding anything*.
-
-For a task with **no** reference band — a generated one — it compares against this project's
-own earlier succeeded, non-truncated runs of the same task and arm, and labels the result a
-**baseline**, never a validated reference. The first run of a new task is reported as *"this
-run is the baseline for future ones"*.
-
-`analyze_run`'s `metrics` dict never includes the `cost/*` columns the engine's `CostProfiler`
-writes to `metrics.csv` — those are training instrumentation, not a task metric, and are
-filtered out so a run's quality numbers don't quietly acquire two timing columns. The live
-`job_status` panel above shows them unfiltered instead (useful while watching a long run), and
-the full-fidelity mean/median/p90 iteration time and mean/peak GPU memory per stage live in
-`run_summary.json`.
-
-## Step 6 — register
+**A run truncated by `trainer.max_steps` is never compared to anything** — the report says
+so explicitly, and the orchestrator is instructed never to present a truncated smoke run as
+a real result. **Every run of a task this build has never seen before is a baseline**, since
+`generic.reference.band` is always `null` (§8 of
+[profiling-and-knowledge.md](../modules/profiling-and-knowledge.md#8-the-two-stamps)) — the
+first successful run is what later runs of the same task get compared against, and the
+report says so rather than judging it against someone else's number.
 
 ```
-you> Register it as splice_site_acceptor.
+you> Register it as my_task.
 
   ┌─ approval required ──────────────────────────────────────────
-  │ Register job 'splice_site_acceptor_lora_20260812_185058' as the servable tool
-  │ 'splice_site_acceptor'
+  │ Register job 'my_task_lora_20260818_101810' as the servable tool 'my_task'
   └──────────────────────────────────────────────────────────────
   approve? [y/N] y
 ```
@@ -278,17 +302,17 @@ you> Register it as splice_site_acceptor.
 `register_trained_adapter(job_id, name=None, description=None)` refuses a job that is not
 `succeeded`, and one that produced no adapter file (*"LoRA runs write one; full fine-tuning
 runs do not"*). On success it copies the artifact into `toolhub_data/adapters/`, writes the
-manifest entry, and stamps `provenance.job_id` and `provenance.training_metrics`.
+manifest entry — including the landed `spec.json` into `provenance["spec"]`, which is what
+lets the tool describe its own output and validate its own predictions
+([toolhub.md](../modules/toolhub.md)) — and stamps `provenance.job_id` and
+`provenance.training_metrics`.
 
 The tool becomes resident on next use — no restart needed:
 
 ```
-you> Score this acceptor window with both donor and acceptor tools.
-  → splice_site({sequences: […]})            = [0.010]
-  → splice_site_acceptor({sequences: […]})   = [0.998]
+you> Is this sequence positive?
+  → my_task({sequences: […]})   = [0.998]
 ```
-
-Both answers come from **one** loaded backbone.
 
 ## Driving it from the browser
 
@@ -296,8 +320,9 @@ Both answers come from **one** loaded backbone.
 python -m adaptrna_agentic.cli.serve --open
 ```
 
-The same flow, with the gate as a modal showing the same exact command, and the Jobs panel
-updating in place while the run proceeds. Sessions are shared: start in the terminal,
+The same four steps, with each gate as a modal showing the same exact command or diff, and
+a form for editing spec fields (gate 1) or overrides (gate 3) before approving. The Jobs
+panel updates in place while a run proceeds. Sessions are shared: start in the terminal,
 continue in the browser, and back.
 
 A refresh mid-approval restores the dialog from `GET /api/sessions/{id}/history`'s
@@ -308,43 +333,41 @@ A refresh mid-approval restores the dialog from `GET /api/sessions/{id}/history`
 Every step has a plain-Python equivalent:
 
 ```python
-from adaptrna_agentic.profiling.profiler import profile_dataset
+from adaptrna_agentic.profiling.profiler import profile_dataset, confirm_profile
 from adaptrna_agentic.profiling.recommender import recommend
+from adaptrna_agentic.codegen import pipeline, staging
 from adaptrna_agentic.jobs.runner import JobRunner
 from adaptrna_agentic.jobs.analysis import analyze_run
 from adaptrna_agentic.toolhub.registry import Registry
 
-plan   = recommend(profile_dataset("~/data/train_data"), task_options={"ss_type": "acceptor"})
-record = JobRunner().start(plan)                       # no gate at this level
+spec = confirm_profile(profile_dataset("~/data/my_data.csv"))
+result = pipeline.create_task(spec)                     # renders, or falls back to generation
+staging.land(result.stage)                               # no gate at this level
+
+plan   = recommend("my_task")
+record = JobRunner().start(plan)
 report = analyze_run(record.output_path, plan=record.plan)
-Registry().register(record.adapter_path, name="splice_site_acceptor")
+Registry().register(record.adapter_path, name="my_task")
 ```
 
 The approval gates live in the **graph**, not in these services — a Python caller is assumed
-to have made the decision by calling. The `plan["source"]` check is likewise in
-`tool_factory`, not in `JobRunner`.
-
-Or bypass the platform entirely and use the engine directly
-([engine README](../../engine/README.md)):
-
-```bash
-python -m rinalmo_hub.cli.train --task splice_site --config engine/configs/tasks/splice_site.yaml \
-    --use_lora --set optim.lr=3e-4 --set data.ss_type=acceptor --seed 42 \
-    --output_dir outputs/manual_acceptor
-python -m adaptrna_agentic.cli.toolhub register outputs/manual_acceptor/splice_site_adapter.pt
-```
+to have made the decision by calling. The `spec["source"]`/`plan["source"]` checks are
+likewise in `tool_factory`, not in `pipeline`/`JobRunner`.
 
 ## What can go wrong
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| `This plan did not come from recommend_training_config` | Intentional. Hyperparameters must come from the knowledge base. | Call `recommend_training_config` and pass its result through unchanged |
+| `This build trains from a single table (.csv/.tsv, optionally gzipped) …` | Not a single delimited table | Profile a `.csv`/`.tsv` (optionally `.gz`) with one sequence column and one label column |
+| Refusal naming binary/multiclass/regression | The label column is free text, per-position, or has too many distinct values | This build supports exactly those three target types — nothing is converted for you |
+| `This spec did not come from profile_dataset` / `…confirm_data_profile` | Intentional — the spec must pass through its gate | Call the tool that produced it and pass the result through unchanged |
+| `This plan did not come from recommend_training_config` | Intentional. Hyperparameters must come from the knowledge base | Call `recommend_training_config` and pass its result through unchanged |
 | `Job '…' is still running` | One training job at a time by default | Wait, or cancel it |
 | `The ToolHub's backbone checkpoint '…' does not exist` | The manifest points at a missing file | `toolhub config --weights /path/to/giga-v1.pt` |
 | Plan warns about random weights | No checkpoint configured at all | Same fix, before training for real |
 | Job goes to `failed` with no `exit_code` | SIGKILL, OOM, or a hard crash | `job logs` / `train.log` — the last lines usually name it |
 | `PID … may since have been reused — refusing to signal it` | The process is gone; the record was closed out and **nothing was killed** | None needed |
-| Verdict `suspicious`, below the band | Could be real, could be variance | Repeat with another seed or `data.dataset_id` fold before concluding anything |
+| Verdict `baseline` | Expected for every task this build has not seen before — there is no reference band to compare against | Not an error; the run itself becomes the reference for the next one |
 | Verdict `failed`, primary metric ≈ 0 | Degenerate output | The report carries the arm's documented failure mode and its remedy |
 | `is a full fine-tuning export` at registration | Only LoRA adapters can be served | Evaluate it with `rinalmo_hub.cli.evaluate --init_params` instead |
 | A crashed run | **Cannot be resumed mid-flight** | Start it again |

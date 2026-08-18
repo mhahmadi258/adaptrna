@@ -2,13 +2,13 @@ name: training_gate
 description: |
   Flow C's gate. start_training must not run before approval, and a denial must leave no
   job behind — the property that matters more than any other in this project.
-tools: [splice_site]
+tools: [demo_binary]
 turns:
-  - user: Train an acceptor model and start it now.
+  - user: Train the model and start it now.
     script:
       - tool_calls:
           - name: start_training
-            args: {plan: {task: splice_site, arm: lora}}
+            args: {plan: {task: demo_binary, arm: lora}}
       - text: I have stopped at the approval gate.
     expect_interrupt: true
     expect_no_jobs: true

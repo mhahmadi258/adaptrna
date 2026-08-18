@@ -13,8 +13,8 @@ change anything.
 | Document | Package | In one line |
 |---|---|---|
 | [toolhub.md](toolhub.md) | `toolhub/` | The deterministic heart: what tools exist (manifest + registry) and how they run (`AdapterRuntime`), plus external tools, `doctor` and `prune`. |
-| [agents.md](agents.md) | `agents/`, `models.py`, `settings.py` | The three LangGraph agents, the approval gate, and the ToolHub → LangChain bridge that defines all 16 management tools. |
-| [codegen.md](codegen.md) | `codegen/` | The bounded ToolSmith ⇄ Verifier loop, the seven-check verification harness, the sandbox, staging and discovery. |
+| [agents.md](agents.md) | `agents/`, `models.py`, `settings.py` | The three LangGraph agents, the approval gate (including human edits at the gate), and the ToolHub → LangChain bridge that defines all 17 management tools. |
+| [codegen.md](codegen.md) | `codegen/`, `codegen/templates/` | Two paths to task code — a deterministic template renderer, and a fallback ToolSmith ⇄ Verifier loop — converging on the same seven-check verification harness, sandbox, staging and discovery. |
 | [jobs.md](jobs.md) | `jobs/` | Launching detached GPU training, tracking it from disk, and judging the result. |
 | [profiling-and-knowledge.md](profiling-and-knowledge.md) | `profiling/`, `knowledge/` | Data profile in, executable and *grounded* training plan out. |
 | [api.md](api.md) | `api/` | FastAPI service, the SSE contract, and the approval round trip over HTTP. |
@@ -68,6 +68,7 @@ flowchart TD
     pr["toolhub/prune.py"]
 
     pipe["codegen/pipeline.py"]
+    tmpl["codegen/templates/"]
     har["codegen/harness.py"]
     sand["codegen/sandbox.py"]
     stag["codegen/staging.py"]
@@ -90,18 +91,18 @@ flowchart TD
     thub --> reg & rt & doc & pr & ext
     orch --> tf
     tf --> reg & rt & prof & rec & jr & an & pipe & stag
-    pipe --> smith & ver & har & stag
+    pipe --> smith & ver & har & stag & tmpl
     smith --> prompts
     ver --> prompts
-    prompts --> kb
+    prompts --> kb & tmpl
     har --> sand
     rec --> kb & reg
-    prof --> kb
+    prof --> kb & disc
     an --> kb & jr
     jr --> js
-    reg --> man
+    reg --> man & disc
     rt --> reg
-    doc --> reg & js & stag & disc
+    doc --> reg & js & stag & disc & tmpl
     pr --> reg & js & stag
     smith --> models --> settings
     ver --> models

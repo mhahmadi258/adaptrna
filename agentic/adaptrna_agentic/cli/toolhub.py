@@ -2,7 +2,7 @@
 
     python -m adaptrna_agentic.cli.toolhub list
     python -m adaptrna_agentic.cli.toolhub register outputs/run/<task>_adapter.pt
-    python -m adaptrna_agentic.cli.toolhub predict splice_site --sequences ACGU...
+    python -m adaptrna_agentic.cli.toolhub predict <your_tool> --sequences ACGU...
 
 Registry operations are instant; `predict`, `test` and `warmup` load the backbone (lazy
 by design). Residency is per process: each CLI invocation pays its own backbone load —
@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("register-external",
                        help="Register an external wrapper module's functions as tools")
     p.add_argument("module",
-                   help="Import path, e.g. adaptrna_agentic.toolhub.external.vienna")
+                   help="Import path, e.g. adaptrna_custom.tools.<your_tool>")
     p.add_argument("--only", default=None,
                    help="Comma-separated subset of the module's functions")
     p.add_argument("--yes", action="store_true",

@@ -1,11 +1,13 @@
-"""DataProfiler against synthetic fixtures — deterministic, no engine, no real datasets."""
+"""`profile_dataset` against synthetic fixtures — deterministic, no engine, no real
+datasets, no layout matching (Phase 13). One CSV/TSV in; a proposed `DatasetSpec` out."""
 
 import gzip
 import random
 
 import pytest
 
-from adaptrna_agentic.profiling.profiler import profile_dataset
+from adaptrna_agentic.profiling.profiler import PROFILE_SOURCE, profile_dataset
+from adaptrna_agentic.toolhub.errors import ToolHubError
 
 random.seed(0)
 
@@ -14,124 +16,280 @@ def _sequence(length: int) -> str:
     return "".join(random.choice("ACGT") for _ in range(length))
 
 
-@pytest.fixture
-def mrl_layout(tmp_path):
-    """A directory holding the gzipped CSV the engine's MRL datamodule reads."""
-    root = tmp_path / "mrl_data"
-    root.mkdir()
-    rows = ["utr,rl,set,total_reads"]
-    for i in range(50):
-        rows.append(f"{_sequence(random.randint(25, 100))},{4.0 + i * 0.01},random,{100 + i}")
-
-    with gzip.open(root / "GSM4084997_varying_length_25to100.csv.gz", "wt") as handle:
-        handle.write("\n".join(rows))
-
-    return root
+def _binary_rows(n=40, length=32):
+    return ["sequence,label"] + [f"{_sequence(length)},{i % 2}" for i in range(n)]
 
 
-@pytest.fixture
-def spliceator_layout(tmp_path):
-    """The Spliceator fold layout: <root>/GS_1/db_N/{Train,Val}_{type}_400.csv."""
-    root = tmp_path / "train_data"
-    fold = root / "GS_1" / "db_1"
-    fold.mkdir(parents=True)
+# ---------------------------------------------------------------------- accepted input
 
-    for split in ("Train", "Val"):
-        for ss_type in ("donor", "acceptor"):
-            rows = [
-                f"group{i};{_sequence(400)};{i % 2}"
-                for i in range(40 if split == "Train" else 10)
-            ]
-            (fold / f"{split}_{ss_type}_400.csv").write_text("\n".join(rows) + "\n")
+def test_profile_is_stamped_and_versioned(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("\n".join(_binary_rows()) + "\n")
 
-    return root
+    spec = profile_dataset(path)
+
+    assert spec["source"] == PROFILE_SOURCE
+    assert spec["spec_version"] == 1
+    assert spec["path"] == str(path.resolve())
 
 
-def test_mrl_layout_is_matched(mrl_layout):
-    profile = profile_dataset(mrl_layout)
+def test_sequence_and_label_detected_by_name(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("\n".join(_binary_rows()) + "\n")
 
-    assert profile["layout_match"] == "mrl"
-    assert "GSM4084997" in profile["layout_reason"]
-    assert profile["gzipped_csvs"] == ["GSM4084997_varying_length_25to100.csv.gz"]
+    spec = profile_dataset(path)
 
-
-def test_mrl_csv_profiled_directly(mrl_layout):
-    profile = profile_dataset(mrl_layout / "GSM4084997_varying_length_25to100.csv.gz")
-
-    assert profile["kind"] == "table"
-    assert profile["sequence_column"] == "utr"
-    assert profile["target_column"] == "rl"
-    assert profile["target_type"] == "continuous"
-    assert 25 <= profile["length_median"] <= 100
-    assert profile["alphabet"] == "dna"
-    assert profile["layout_match"] == "mrl"       # sibling file satisfies the layout
+    assert spec["sequence_column"] == "sequence"
+    assert spec["label_column"] == "label"
+    assert spec["target_type"] == "binary"
+    assert spec["classes"] == ["0", "1"]
+    assert spec["class_counts"] == {"0": 20, "1": 20}
+    assert spec["positive_class"] in spec["classes"]
 
 
-def test_spliceator_layout_is_matched_with_folds(spliceator_layout):
-    profile = profile_dataset(spliceator_layout)
-
-    assert profile["layout_match"] == "splice_site"
-    assert profile["folds"] == ["db_1"]
-    assert set(profile["ss_types"]) == {"donor", "acceptor"}
-    assert profile["target_type"] == "binary"
-    assert profile["length_median"] == 400
-    assert profile["splits"]["Train_donor_400.csv"] == 40
-
-
-def test_unknown_schema_names_the_nearest_template(tmp_path):
-    path = tmp_path / "mystery.csv"
-    rows = ["sequence,affinity"] + [f"{_sequence(60)},{i * 0.5}" for i in range(30)]
-    path.write_text("\n".join(rows))
-
-    profile = profile_dataset(path)
-
-    assert profile["layout_match"] is None
-    assert "No shipped task reads this layout" in profile["layout_reason"]
-    assert "mrl" in profile["layout_reason"]           # nearest by shape: continuous target
-    assert "three files" in profile["guidance"]        # honest about what is missing
-
-
-def test_sequence_and_target_detection_by_content(tmp_path):
+def test_sequence_and_label_detected_by_content(tmp_path):
     path = tmp_path / "unnamed.csv"
     rows = ["col_a,col_b"] + [f"{_sequence(80)},{i % 2}" for i in range(30)]
     path.write_text("\n".join(rows))
 
-    profile = profile_dataset(path)
+    spec = profile_dataset(path)
 
-    assert profile["sequence_column"] == "col_a"      # sniffed, not named
-    assert profile["target_column"] == "col_b"
-    assert profile["target_type"] == "binary"
-    assert profile["target_summary"]["class_counts"]
+    assert spec["sequence_column"] == "col_a"
+    assert spec["label_column"] == "col_b"
+    assert spec["target_type"] == "binary"
+
+
+def test_tsv_is_accepted(tmp_path):
+    path = tmp_path / "data.tsv"
+    rows = ["sequence\tlabel"] + [f"{_sequence(32)}\t{i % 2}" for i in range(40)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["format"]["separator"] == "\t"
+    assert spec["target_type"] == "binary"
+
+
+def test_gzipped_csv_is_accepted(tmp_path):
+    path = tmp_path / "data.csv.gz"
+    with gzip.open(path, "wt") as handle:
+        handle.write("\n".join(_binary_rows()) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["format"]["compression"] == "gzip"
+    assert spec["target_type"] == "binary"
+
+
+def test_multiclass_detected(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label"] + [f"{_sequence(32)},{i % 3}" for i in range(30)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["target_type"] == "multiclass"
+    assert spec["classes"] == ["0", "1", "2"]
+    assert spec["positive_class"] is None
+
+
+def test_regression_detected(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,affinity"] + [f"{_sequence(60)},{i * 0.37}" for i in range(30)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["target_type"] == "regression"
+    assert spec["classes"] is None
+    assert spec["target_summary"]
 
 
 def test_rna_alphabet_detected(tmp_path):
     path = tmp_path / "rna.csv"
-    rows = ["sequence,y"] + [f"{'ACGU' * 20},{i}" for i in range(10)]
+    rows = ["sequence,label"] + [f"{'ACGU' * 20},{i % 2}" for i in range(10)]
     path.write_text("\n".join(rows))
 
     assert profile_dataset(path)["alphabet"] == "rna"
 
 
-def test_missing_values_reported(tmp_path):
-    path = tmp_path / "gappy.csv"
-    rows = ["sequence,rl", f"{_sequence(50)},", f"{_sequence(50)},3.2"]
-    path.write_text("\n".join(rows))
+def test_task_name_and_description_are_proposed(tmp_path):
+    path = tmp_path / "My Donor Sites.csv"
+    path.write_text("\n".join(_binary_rows()) + "\n")
 
-    profile = profile_dataset(path)
+    spec = profile_dataset(path)
 
-    assert profile["missing_values"].get("rl") == 1
+    assert spec["task_name"].isidentifier()
+    assert spec["task_name"] == spec["task_name"].lower()
+    assert spec["tool_description"]
 
 
-def test_fasta_profiled(tmp_path):
+def test_head_recipe_matches_target_type(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("\n".join(_binary_rows()) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["head"]["primary_metric"] == "test/f1_score"
+    assert spec["head"]["loss"] == "binary_cross_entropy_with_logits"
+
+
+# ---------------------------------------------------------------------- split proposal
+
+def test_default_split_is_random_80_10_10(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("\n".join(_binary_rows(n=100)) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["split"]["mode"] == "random"
+    assert spec["split"]["fractions"] == {"train": 0.8, "val": 0.1, "test": 0.1}
+    assert spec["split"]["seed"] == 42
+    assert spec["split"]["stratify"] is True
+    counts = spec["split"]["row_counts"]
+    assert counts["train"] + counts["val"] + counts["test"] == 100
+
+
+def test_a_split_name_column_is_proposed_as_column_mode(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label,fold"]
+    for i in range(40):
+        fold = "train" if i < 30 else "test"
+        rows.append(f"{_sequence(32)},{i % 2},{fold}")
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["split"]["mode"] == "column"
+    assert spec["split"]["column"] == "fold"
+    assert spec["split"]["row_counts"]["train"] == 30
+    assert spec["split"]["row_counts"]["test"] == 10
+    assert "fold" in spec["split_candidates"]
+
+
+# ---------------------------------------------------------------------- quality checks
+
+def test_duplicate_sequences_are_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    seq = _sequence(32)
+    rows = ["sequence,label", f"{seq},0", f"{seq},1"] + _binary_rows(n=38)[1:]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert any("appear more than once" in w for w in spec["warnings"])
+
+
+def test_class_imbalance_is_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label"]
+    rows += [f"{_sequence(32)},0" for _ in range(95)]
+    rows += [f"{_sequence(32)},1" for _ in range(5)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert any("minority class" in w for w in spec["warnings"])
+
+
+def test_non_nucleotide_characters_are_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label", f"{_sequence(30)}XX,0"] + _binary_rows(n=39)[1:]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert any("ACGTUN" in w for w in spec["warnings"])
+    assert spec["on_invalid"] == "fail"
+
+
+def test_missing_sequence_values_are_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label", ",0"] + _binary_rows(n=39)[1:]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert any("missing sequence" in w for w in spec["warnings"])
+
+
+def test_length_spread_is_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label"] + [f"{_sequence(20)},{i % 2}" for i in range(39)]
+    rows.append(f"{_sequence(200)},0")  # one wild outlier
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert any("median" in w and "nt" in w for w in spec["warnings"])
+
+
+def test_tiny_dataset_is_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("\n".join(_binary_rows(n=10)) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert any("usable rows" in w for w in spec["warnings"])
+
+
+def test_leakage_across_column_split_is_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    shared = _sequence(32)
+    rows = ["sequence,label,fold", f"{shared},0,train", f"{shared},1,test"]
+    for i in range(38):
+        fold = "train" if i < 28 else "test"
+        rows.append(f"{_sequence(32)},{i % 2},{fold}")
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["split"]["mode"] == "column"
+    assert any("train and test" in w for w in spec["warnings"])
+
+
+# ---------------------------------------------------------------------- refusals (D7, D8)
+
+def test_directory_is_refused(tmp_path):
+    with pytest.raises(ToolHubError, match="single table"):
+        profile_dataset(tmp_path)
+
+
+def test_fasta_is_refused(tmp_path):
     path = tmp_path / "windows.fasta"
-    records = [f">seq{i}\n{_sequence(400)}" for i in range(5)]
-    path.write_text("\n".join(records) + "\n")
+    path.write_text(">seq1\nACGUACGU\n")
 
-    profile = profile_dataset(path)
+    with pytest.raises(ToolHubError, match="single table"):
+        profile_dataset(path)
 
-    assert profile["kind"] == "fasta"
-    assert profile["sampled_rows"] == 5
-    assert profile["length_median"] == 400
+
+def test_unknown_suffix_is_refused(tmp_path):
+    path = tmp_path / "data.parquet"
+    path.write_text("not actually parquet")
+
+    with pytest.raises(ToolHubError, match="single table"):
+        profile_dataset(path)
+
+
+def test_per_position_label_is_refused(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,structure"]
+    for _ in range(30):
+        seq = _sequence(40)
+        rows.append(f"{seq},{'.' * 40}")
+    path.write_text("\n".join(rows) + "\n")
+
+    with pytest.raises(ToolHubError, match="[Pp]er-position"):
+        profile_dataset(path)
+
+
+def test_too_many_free_text_classes_is_refused(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label"] + [f"{_sequence(30)},class_{i}" for i in range(30)]
+    path.write_text("\n".join(rows) + "\n")
+
+    with pytest.raises(ToolHubError, match="binary classification, multiclass"):
+        profile_dataset(path)
 
 
 def test_missing_path_raises():

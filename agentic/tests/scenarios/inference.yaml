@@ -2,19 +2,19 @@ name: inference
 description: |
   Flow A. The user asks what exists, then asks for a prediction. The adapter tool runs on
   the shared backbone and the loop terminates on the tool-free answer.
-tools: [splice_site, dummy]
+tools: [demo_binary, dummy]
 turns:
   - user: What tools are available?
     script:
       - tool_calls: [{name: list_tools, args: {}}]
-      - text: You have a splice-site adapter and two dummy tools.
+      - text: You have a demo binary-classification adapter and two dummy tools.
     expect_tools: [list_tools]
-    expect_tool_result_contains: [splice_site, dummy_add]
-  - user: Is GGCAUUACGGCUUAAGCUAGCUAGCUAAGGCC a splice site?
+    expect_tool_result_contains: [demo_binary, dummy_add]
+  - user: What does GGCAUUACGGCUUAAGCUAGCUAGCUAAGGCC score?
     script:
       - tool_calls:
-          - name: splice_site
+          - name: demo_binary
             args: {sequences: [GGCAUUACGGCUUAAGCUAGCUAGCUAAGGCC]}
       - text: The probability is reported above.
-    expect_tools: [splice_site]
+    expect_tools: [demo_binary]
     expect_probabilities: true

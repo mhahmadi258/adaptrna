@@ -277,13 +277,46 @@ function showApproval(request) {
   }
 }
 
+/** Values changed from what the gate proposed, keyed by their dotted `data-edit-path`
+ * (Phase 13 §5) — untouched fields (`input.value === input.defaultValue`) are not sent,
+ * so an edits object only ever names what the human actually changed. */
+function _collectEdits() {
+  const edits = {};
+  for (const input of $("approval-body").querySelectorAll("[data-edit-path]")) {
+    if (input.value === input.defaultValue) continue;
+
+    const path = input.dataset.editPath;
+    if (input.dataset.editJson === "true") {
+      try {
+        edits[path] = JSON.parse(input.value);
+      } catch {
+        continue; // malformed JSON: leave it out rather than send garbage
+      }
+      continue;
+    }
+
+    const raw = input.value;
+    if (raw.trim() === "") {
+      edits[path] = raw;
+    } else if (raw === "true" || raw === "false") {
+      edits[path] = raw === "true";
+    } else if (!Number.isNaN(Number(raw))) {
+      edits[path] = Number(raw);
+    } else {
+      edits[path] = raw;
+    }
+  }
+  return edits;
+}
+
 async function decide(approved) {
   _closeApprovalEditor();
   const note = $("approval-note").value.trim();
+  const edits = approved ? _collectEdits() : null;
   $("approval").hidden = true;
   state.pending = null;
 
-  await consume((onEvent) => resumeSession(state.session, approved, note || null, onEvent));
+  await consume((onEvent) => resumeSession(state.session, approved, note || null, edits, onEvent));
   refreshPanels();
 }
 

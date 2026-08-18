@@ -33,43 +33,57 @@ def test_all_pipeline_tools_are_bound(tools):
 
 
 def test_only_consequential_tools_are_gated():
-    # GPU hours, a new servable tool, writing code into the repository — and, gated for
-    # authority rather than cost, changing which tools the assistant may run at all.
+    # GPU hours, a new servable tool, writing code into the repository, approving the
+    # profiler's interpretation of a dataset — and, gated for authority rather than
+    # cost, changing which tools the assistant may run at all.
     assert set(GATED_TOOLS) == {
-        "start_training", "register_trained_adapter", "land_generated_code",
-        "activate_tool", "deactivate_tool",
+        "confirm_data_profile", "start_training", "register_trained_adapter",
+        "land_generated_code", "activate_tool", "deactivate_tool",
     }
 
 
-def test_profile_and_recommend_round_trip(tools, tmp_path):
+def test_profile_confirm_and_recommend_round_trip(tools, tmp_path):
+    # profile_dataset no longer matches a shipped task's on-disk layout (Phase 13) — it
+    # proposes a DatasetSpec from one flat table, approved (here, unedited) through
+    # confirm_data_profile. recommend_training_config takes the approved spec directly,
+    # the same way it would for a task the human has not yet landed through
+    # create_task_tool + land_generated_code.
     built, _registry = tools
-    root = tmp_path / "train_data"
-    (root / "GS_1" / "db_1").mkdir(parents=True)
-    (root / "GS_1" / "db_1" / "Train_acceptor_400.csv").write_text(
-        "\n".join(f"g{i};{'ACGT' * 100};{i % 2}" for i in range(10)) + "\n"
+    path = tmp_path / "data.csv"
+    path.write_text(
+        "sequence,label\n" + "\n".join(f"{'ACGT' * 100},{i % 2}" for i in range(40)) + "\n"
     )
-    (tmp_path / "test_data").mkdir()
 
-    profile = built["profile_dataset"].invoke({"path": str(root)})
-    assert profile["layout_match"] == "splice_site"
+    profile = built["profile_dataset"].invoke({"path": str(path)})
+    assert profile["target_type"] == "binary"
+    assert profile["sequence_column"] == "sequence"
+
+    spec = built["confirm_data_profile"].invoke({"spec": profile})
 
     plan = built["recommend_training_config"].invoke({
-        "data_path": str(root), "task_options": {"ss_type": "acceptor"},
+        "task": spec["task_name"], "spec": spec,
     })
-    assert plan["overrides"]["data.ss_type"] == "acceptor"
     assert plan["overrides"]["optim.lr"] == pytest.approx(3.0e-4)
+    assert plan["overrides"]["data.root"] == spec["path"]
     assert plan["command"][1:3] == ["-m", "adaptrna_agentic.jobs.train_entrypoint"]
 
 
-def test_recommend_on_unmatched_data_returns_the_refusal_as_a_result(tools, tmp_path):
+def test_recommend_with_no_task_returns_the_refusal_as_a_result(tools):
     built, _registry = tools
-    path = tmp_path / "mystery.csv"
-    path.write_text("sequence,affinity\n" + "\n".join(f"{'ACGT' * 15},{i}" for i in range(20)))
 
-    result = built["recommend_training_config"].invoke({"data_path": str(path)})
+    result = built["recommend_training_config"].invoke({"task": ""})
 
     assert isinstance(result, str)                    # ToolException -> tool result
-    assert "nothing to train yet" in result
+    assert "no task to train yet" in result
+
+
+def test_recommend_for_an_unlanded_task_returns_the_refusal_as_a_result(tools):
+    built, _registry = tools
+
+    result = built["recommend_training_config"].invoke({"task": "never_landed"})
+
+    assert isinstance(result, str)
+    assert "No dataset spec found" in result
 
 
 def _finished_job(tmp_path, built, adapter_source):
@@ -87,14 +101,15 @@ def _finished_job(tmp_path, built, adapter_source):
         "m=out/'metrics'/'version_0'; m.mkdir(parents=True, exist_ok=True)\n"
         "(m/'metrics.csv').write_text('epoch,step,train/loss,test/f1_score\\n"
         "0,50,0.4,\\n1,100,,96.5\\n')\n"
-        "shutil.copy(sys.argv[2], out/'splice_site_adapter.pt')\n"
+        "shutil.copy(sys.argv[2], out/'demo_binary_adapter.pt')\n"
         "(out/'exit_code').write_text('0')\n"
     )
     plan = {
         "source": PLAN_SOURCE,
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir), str(adapter_source)],
         "overrides": {}, "estimated_wall_clock": "~7 min", "warnings": [],
+        "primary_metric": "test/f1_score",
     }
 
     result = built["start_training"].invoke({"plan": plan})
@@ -122,13 +137,13 @@ def test_start_status_analyze_register_flow(tools, tmp_path, nano_splice_adapter
     assert report["primary_value"] == pytest.approx(96.5)
 
     entry = built["register_trained_adapter"].invoke(
-        {"job_id": job_id, "name": "splice_site_acceptor",
+        {"job_id": job_id, "name": "demo_binary_acceptor",
          "description": "Acceptor splice sites"}
     )
-    assert entry["name"] == "splice_site_acceptor"
+    assert entry["name"] == "demo_binary_acceptor"
     assert entry["provenance"]["job_id"] == job_id
     assert entry["provenance"]["training_metrics"]["test/f1_score"] == pytest.approx(96.5)
-    assert registry.get("splice_site_acceptor").active
+    assert registry.get("demo_binary_acceptor").active
 
 
 def test_list_jobs_reports_the_run(tools, tmp_path, nano_splice_adapter):
@@ -149,7 +164,7 @@ def test_registering_an_unfinished_job_is_refused(tools, tmp_path):
     output_dir = tmp_path / "outputs" / "slow_run"
     built["start_training"].invoke({"plan": {
         "source": PLAN_SOURCE,
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir)],
         "overrides": {}, "warnings": [],
     }})
@@ -168,7 +183,7 @@ def test_start_training_refuses_a_hand_assembled_plan(tools):
     prompt: a plan that did not come from the recommender is refused."""
     built, _registry = tools
     forged = {
-        "task": "splice_site", "arm": "lora", "output_dir": "outputs/forged",
+        "task": "demo_binary", "arm": "lora", "output_dir": "outputs/forged",
         "command": ["echo", "hi"], "overrides": {"optim.lr": 1e-3},
     }
 

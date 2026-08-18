@@ -43,7 +43,7 @@ def _finished_job(tmp_path) -> str:
     output_dir = tmp_path / "outputs" / "api_job"
     runner = JobRunner()
     runner.start({
-        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora",
+        "source": PLAN_SOURCE, "task": "demo_binary", "arm": "lora",
         "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir)],
         "overrides": {}, "primary_metric": "test/f1_score",
@@ -103,7 +103,7 @@ def test_recycled_pid_surfaces_as_409_not_500(client):
     test_client, tmp_path = client
     store = JobStore(tmp_path / "jobs_data")
     store.add(JobRecord(
-        id="ghost", task="splice_site", arm="lora", command=["x"],
+        id="ghost", task="demo_binary", arm="lora", command=["x"],
         output_dir=str(tmp_path / "outputs" / "ghost"),
         state="running", pid=999999, pid_starttime="1",
     ))
@@ -135,9 +135,9 @@ def test_logs_tail_is_validated(client):
 def test_tool_refusal_is_409_with_the_cli_message(client, nano_registry, nano_splice_adapter):
     test_client, _ = client
     nano_registry.register(nano_splice_adapter)
-    test_client.post("/api/tools/splice_site/deactivate")
+    test_client.post("/api/tools/demo_binary/deactivate")
 
-    response = test_client.post("/api/tools/splice_site/predict", json={"sequences": ["ACGU"]})
+    response = test_client.post("/api/tools/demo_binary/predict", json={"sequences": ["ACGU"]})
 
     assert response.status_code == 409
     assert response.json()["type"] == "ToolHubError"

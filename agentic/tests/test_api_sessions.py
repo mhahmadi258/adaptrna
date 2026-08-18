@@ -38,7 +38,7 @@ def test_a_plain_turn_streams_text_then_done(nano_registry, db):
 def test_a_tool_turn_streams_call_then_result(nano_registry, nano_splice_adapter, db):
     nano_registry.register(nano_splice_adapter)
     client, _ = _client(nano_registry, db, [
-        AIMessage(content="", tool_calls=[tool_call("splice_site", {"sequences": [SEQ]})]),
+        AIMessage(content="", tool_calls=[tool_call("demo_binary", {"sequences": [SEQ]})]),
         AIMessage(content="The probability is above."),
     ])
 
@@ -47,7 +47,7 @@ def test_a_tool_turn_streams_call_then_result(nano_registry, nano_splice_adapter
 
     assert names.index("tool_call") < names.index("tool_result") < names.index("done")
     call = next(e for e in events if e["event"] == "tool_call")
-    assert call["data"]["name"] == "splice_site"
+    assert call["data"]["name"] == "demo_binary"
 
     result = next(e for e in events if e["event"] == "tool_result")
     values = json.loads(result["data"]["content"])
@@ -255,9 +255,9 @@ def test_rename_is_refused_while_an_approval_is_pending(nano_registry, nano_spli
     """Renaming moves the rows a suspended turn is addressed by; the interrupt would be
     stranded with no way for either front end to answer it."""
     nano_registry.register(nano_splice_adapter)
-    nano_registry.deactivate("splice_site")
+    nano_registry.deactivate("demo_binary")
     client, _ = _client(nano_registry, db, [
-        AIMessage(content="", tool_calls=[tool_call("activate_tool", {"name": "splice_site"})]),
+        AIMessage(content="", tool_calls=[tool_call("activate_tool", {"name": "demo_binary"})]),
         AIMessage(content="done"),
     ])
 

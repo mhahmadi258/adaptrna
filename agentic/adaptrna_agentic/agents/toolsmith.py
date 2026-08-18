@@ -43,20 +43,16 @@ def _model(model=None):
 
 
 def generate_task(
-    task_name: str,
-    description: str,
-    profile: Dict[str, object],
+    spec: Dict[str, object],
     feedback: Optional[str] = None,
     model=None,
 ) -> Dict[str, str]:
-    """Generate `{filename: content}` for a new task."""
+    """Generate `{filename: content}` for a new task from an approved dataset spec."""
     structured = _model(model).with_structured_output(GeneratedTask)
 
     result = structured.invoke([
         {"role": "system", "content": prompts.task_system_prompt()},
-        {"role": "user", "content": prompts.task_user_prompt(
-            task_name, description, profile, feedback=feedback
-        )},
+        {"role": "user", "content": prompts.task_user_prompt(spec, feedback=feedback)},
     ])
 
     files = {f.filename.strip(): f.content for f in result.files}

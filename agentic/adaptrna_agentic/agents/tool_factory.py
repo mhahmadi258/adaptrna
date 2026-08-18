@@ -33,6 +33,7 @@ MANAGEMENT_TOOL_NAMES = (
     "deactivate_tool",
     "test_tool",
     "profile_dataset",
+    "confirm_data_profile",
     "recommend_training_config",
     "start_training",
     "job_status",
@@ -54,6 +55,7 @@ MANAGEMENT_TOOL_NAMES = (
 #: is cheap and trivially reversible, but the switch is how the user says which capabilities
 #: they trust — so it is theirs, not the model's (PHASE_10 §1).
 GATED_TOOLS = (
+    "confirm_data_profile",
     "start_training",
     "register_trained_adapter",
     "land_generated_code",
@@ -61,14 +63,38 @@ GATED_TOOLS = (
     "deactivate_tool",
 )
 
-#: Appended to adapter tool descriptions so the model knows the output type. A future
-#: sec_struct adapter returns L×L matrices — its wrapper should cap and summarize rather
-#: than dump matrices into context (see plan §7).
-_TASK_OUTPUT_NOTES = {
-    "splice_site": "Returns one probability per sequence that it contains a splice site.",
-    "mrl": "Returns one predicted mean ribosome load per sequence (original scale).",
-    "sec_struct": "Returns one base-pairing matrix per sequence (large output).",
+#: Dotted paths a human may edit at the gate, per gated tool (Phase 13 §5). A path not on
+#: a tool's list here is refused by `orchestrator._apply_edits` — an edit that cannot be
+#: validated must fail loudly, because it is a training/codegen configuration.
+#: `land_generated_code` is deliberately absent: editing generated code at the gate would
+#: mean landing code the harness never actually verified.
+EDITABLE_ARGS = {
+    "confirm_data_profile": (
+        "spec.sequence_column", "spec.label_column", "spec.target_type",
+        "spec.task_name", "spec.tool_description", "spec.positive_class",
+        "spec.on_invalid", "spec.split.*",
+    ),
+    "start_training": (
+        "plan.overrides.*", "plan.seed", "plan.arm", "plan.quick_run",
+    ),
 }
+
+def _output_note(entry) -> Optional[str]:
+    """Appended to an adapter tool's description so the model knows the output type — a
+    registered tool describes its own output because its spec says what it predicts
+    (plan §10). A tool whose entry has no spec (registered by CLI from a hand-built
+    adapter, or landed before this build) gets no note: absence is reported, not guessed.
+    """
+    spec = (entry.provenance or {}).get("spec")
+    if not spec:
+        return None
+
+    predict_output = ((spec.get("head") or {}).get("predict_output") or "").strip()
+    if not predict_output:
+        return None
+
+    return f"Returns {predict_output}."
+
 
 _DISABLED_NOTE = (
     " (currently DISABLED — only the user can enable it. You may offer to ask them, which "
@@ -164,27 +190,47 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
     job_runner = JobRunner()
 
     def profile_dataset(path: str) -> dict:
-        """Describe a dataset: format, sequences, target, and which task can train on it."""
+        """Profile one CSV/TSV table (optionally gzipped) and propose a dataset spec.
+
+        Accepts exactly one delimited file with a sequence column and a label column;
+        refuses a directory, a FASTA file, or a label column this build cannot train on
+        (only binary, multiclass and regression targets are supported). Pass the result
+        to confirm_data_profile for the user's approval — nothing is generated or
+        trained from this call alone.
+        """
         return _profile_dataset(path)
 
+    def confirm_data_profile(spec: dict) -> dict:
+        """Put the profiler's interpretation of a dataset to the user for approval.
+
+        Pass the spec returned by profile_dataset unchanged. The user may correct the
+        column choice, the target type, the split policy and the task name before
+        approving. The approved spec is what create_task_tool consumes; nothing is
+        generated without it. Requires user approval.
+        """
+        from adaptrna_agentic.profiling.profiler import confirm_profile as _confirm_profile
+
+        return _confirm_profile(spec)
+
     def recommend_training_config(
-        data_path: str,
-        task: Optional[str] = None,
+        task: str,
+        spec: Optional[dict] = None,
         arm: str = "lora",
         quick: bool = False,
         seed: int = 42,
-        task_options: Optional[dict] = None,
     ) -> dict:
-        """Propose a validated training plan for a dataset.
+        """Propose a validated training plan for a landed task.
 
-        Returns the task, arm, config overrides, the exact command, an ETA, the rationale
-        behind every setting, and any caveats. All values come from the project's
-        knowledge base of validated runs — never invent hyperparameters yourself.
+        Batch size and epoch count are derived from the spec the task landed with
+        (adaptrna_custom/tasks/<task>/spec.json); pass spec explicitly only to point an
+        existing task at a new file of the same shape (reuse — data.root changes, the
+        code does not). Returns the task, arm, config overrides, the exact command, an
+        ETA, the rationale behind every setting, and any caveats. All values come from
+        the project's knowledge base of validated runs — never invent hyperparameters
+        yourself.
         """
-        profile = _profile_dataset(data_path)
         return _recommend(
-            profile, task=task, arm=arm, quick=quick, seed=seed,
-            task_options=task_options, registry=registry,
+            task, spec=spec, arm=arm, quick=quick, seed=seed, registry=registry,
         )
 
     def start_training(plan: dict) -> dict:
@@ -251,7 +297,7 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
     return [
         StructuredTool.from_function(func=_surface_errors(func), handle_tool_error=True)
         for func in (
-            profile_dataset, recommend_training_config, start_training,
+            profile_dataset, confirm_data_profile, recommend_training_config, start_training,
             job_status, list_jobs, analyze_run, register_trained_adapter,
         )
     ] + _codegen_tools(registry, runtime)
@@ -266,17 +312,27 @@ def _codegen_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseTool
     """Phase 6: write, verify and land new tasks and external wrappers."""
     from adaptrna_agentic.codegen import pipeline, staging
 
-    def create_task_tool(name: str, description: str, data_path: str) -> dict:
-        """Build a NEW engine task for data no existing task can read.
+    def create_task_tool(spec: dict) -> dict:
+        """Build the data loader and head for an approved dataset spec.
 
-        Writes the three files (task module, datamodule, config), verifies them against a
-        real forward/backward pass and an adapter round trip, and has them reviewed. The
-        code is only staged — call land_generated_code to write it into the project.
+        Pass the spec returned by confirm_data_profile unchanged — its columns, target
+        type, split policy and task name become the new task's. Renders deterministically
+        from a template when the spec is fully covered (no model call); falls through to
+        generation only when it is not, or when the render fails verification. Writes and
+        verifies the three task files (task module, datamodule, config) against a real
+        forward/backward pass and an adapter round trip, and has them reviewed. The code
+        is only staged — call land_generated_code to write it into the project.
         """
-        from adaptrna_agentic.profiling.profiler import profile_dataset as _profile
+        from adaptrna_agentic.profiling.profiler import SPEC_SOURCE
 
-        profile = _profile(data_path)
-        result = pipeline.create_task(name, description, profile)
+        if spec.get("source") != SPEC_SOURCE:
+            raise ToolHubError(
+                "This spec did not come from confirm_data_profile. Call "
+                "confirm_data_profile and pass its approved result through unchanged — "
+                "create_task_tool refuses to assemble one for you."
+            )
+
+        result = pipeline.create_task(spec)
         if result.stage is not None:
             _STAGES[result.stage.id] = result.stage
 
@@ -397,7 +453,7 @@ def _adapter_tool(entry, registry: Registry, runtime: AdapterRuntime) -> BaseToo
         return _jsonable(runtime.predict(name, sequences))
 
     description = entry.description
-    note = _TASK_OUTPUT_NOTES.get(entry.task)
+    note = _output_note(entry)
     if note and note not in description:
         description = f"{description} {note}"
     if not entry.active:

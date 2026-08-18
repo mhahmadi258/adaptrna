@@ -1,0 +1,25 @@
+# rendered by adaptrna template v{{ template_version }} from spec.json
+task: {{ task_name }}
+
+head:
+  hidden_dim: 32
+
+data:
+  root: {{ data_path | tojson }}
+  batch_size: 32
+  num_workers: 0
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  layer_stride: 3
+
+optim:
+  name: adamw
+  lr: 3.0e-4
+
+trainer:
+  max_epochs: 1
+  precision: bf16-mixed
+  gradient_clip_val: 1.0

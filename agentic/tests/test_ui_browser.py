@@ -32,7 +32,7 @@ playwright_api = pytest.importorskip(
     reason="pip install playwright && playwright install chromium",
 )
 
-COMMAND = ["/bin/echo", "trained", "--task", "splice_site", "--use_lora"]
+COMMAND = ["/bin/echo", "trained", "--task", "demo_binary", "--use_lora"]
 WARNING = "Cross-species benchmark: test is a different organism"
 
 #: Shaped like what the orchestrator actually writes — it reaches for a table whenever it
@@ -66,7 +66,7 @@ def server(nano_registry, nano_splice_adapter, tmp_path, monkeypatch):
     nano_registry.register(nano_splice_adapter)
 
     plan = {
-        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora",
+        "source": PLAN_SOURCE, "task": "demo_binary", "arm": "lora",
         "output_dir": str(tmp_path / "outputs" / "browser_run"),
         "command": COMMAND, "overrides": {},
         "estimated_wall_clock": "~7 min", "warnings": [WARNING],
@@ -181,7 +181,7 @@ def test_the_panels_render_server_state(page):
     _open(page, base, "browser_panels")
 
     page.wait_for_selector(".tool-row")
-    assert "splice_site" in page.inner_text("#tools-list")
+    assert "demo_binary" in page.inner_text("#tools-list")
 
     _view(page, "jobs")
     page.wait_for_selector("#rail-list .msg-notice")
@@ -213,7 +213,7 @@ def test_the_monitor_keeps_polling_after_a_transient_conflict(page):
                                ' "retryable": true}')
         else:
             route.fulfill(status=200, content_type="application/json",
-                          body='[{"id": "recovered_run", "task": "splice_site",'
+                          body='[{"id": "recovered_run", "task": "demo_binary",'
                                ' "arm": "lora", "state": "succeeded"}]')
 
     page.route("**/api/jobs", flaky)
@@ -230,11 +230,11 @@ def test_a_tool_can_be_disabled_and_re_enabled(page):
     _open(page, base, "browser_tools")
     page.wait_for_selector(".tool-row")
 
-    row = page.locator(".tool-row", has_text="splice_site").first
+    row = page.locator(".tool-row", has_text="demo_binary").first
     row.get_by_role("button", name="disable").click()
 
     page.wait_for_selector(".tool-row.is-disabled")
-    row = page.locator(".tool-row", has_text="splice_site").first
+    row = page.locator(".tool-row", has_text="demo_binary").first
     row.get_by_role("button", name="enable").click()
 
     page.wait_for_selector(".tool-row.is-active")

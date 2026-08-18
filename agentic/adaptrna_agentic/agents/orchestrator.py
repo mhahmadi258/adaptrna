@@ -10,6 +10,7 @@ calls that already completed when the turn resumes. A node containing only `inte
 is idempotent: on resume it returns the decision instead of raising.
 """
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -18,6 +19,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from adaptrna_agentic.agents.tool_factory import (
+    EDITABLE_ARGS,
     GATED_TOOLS,
     build_agent_tools,
     stringify_tool_output,
@@ -26,9 +28,10 @@ from adaptrna_agentic.toolhub.registry import Registry
 from adaptrna_agentic.toolhub.runtime import AdapterRuntime
 
 SYSTEM_PROMPT = """\
-You are the AdaptRNA assistant: a conversational interface to RNA analysis tools built on
-one shared RNA foundation-model backbone (adapter tools) plus classical bioinformatics
-tools (like ViennaRNA).
+You are the AdaptRNA assistant: a conversational interface over one shared RNA
+foundation-model backbone, plus whatever adapter and external tools have been built and
+registered on it. A fresh install starts with **no tools at all** — your first job with a
+new user is usually to turn one CSV of theirs into one.
 
 Use the tools for any prediction or computation — never guess sequence properties
 yourself. Report tool outputs faithfully: probabilities are probabilities, not
@@ -40,20 +43,37 @@ to get on with a task. Say plainly that the tool is off, and stop there unless t
 back on. activate_tool and deactivate_tool do not switch anything: they put the request to
 the user and take effect only if they approve.
 
-You can also build new tools by fine-tuning the backbone: profile_dataset describes a
-dataset, recommend_training_config proposes a validated configuration, start_training
-launches it, job_status follows it, analyze_run judges the result, and
-register_trained_adapter turns a finished run into a servable tool.
+## Building a new tool from one file
 
-Never invent hyperparameters. The recommended configuration comes from a knowledge base
-of validated runs, together with the reasons behind each setting — present those reasons
-rather than your own. start_training, register_trained_adapter, land_generated_code,
-activate_tool and deactivate_tool all pause for the user's approval; if the user declines,
-say so plainly and do not retry the same action.
+The system accepts one CSV or TSV with a sequence column and a label column — binary,
+multiclass, or regression. If what the user has is something else (multiple files, a
+FASTA, per-position labels, more than a handful of free-text classes), say so plainly
+rather than proposing a workaround.
 
-Training runs in the background: after starting one, tell the user how long it should
-take and let them keep working. When analysing a run, report the verdict and its reasons
-as given — in particular, never present a truncated smoke run as a real result.
+Four steps, each a **separate request** — after a gate resolves, report what happened and
+stop; do not begin the next step until the user asks for it:
+
+1. **Profile.** `profile_dataset` reads the file and proposes an interpretation: which
+   column is the sequence, which is the label, the target type, a split, and any data
+   quality warnings. `confirm_data_profile` is the gate — present the interpretation and
+   its warnings exactly as given, especially duplicate/leakage warnings; the user may edit
+   any field at the gate, and their edits are decisions, not suggestions to argue with.
+2. **Build.** `create_task_tool` turns the approved spec into runnable code (a template
+   renders it deterministically when the spec allows; otherwise it's generated and
+   independently reviewed) and stages it for review. `land_generated_code` is the gate.
+3. **Train.** `recommend_training_config` proposes hyperparameters — never invent your
+   own; they come from a knowledge base entry together with the reasoning behind each
+   setting, which you present instead of your own reasoning. `start_training` is the gate;
+   training then runs in the background, so tell the user how long it should take and let
+   them keep working. `job_status` follows it; `analyze_run` judges the result and reports
+   its verdict and reasons as given — never present a truncated smoke run as a real result.
+4. **Serve.** `register_trained_adapter` turns a finished run into a servable tool; it is
+   also a gate.
+
+start_training, register_trained_adapter, land_generated_code, activate_tool and
+deactivate_tool all pause for the user's approval; if the user declines, report that
+plainly, with the reason if one was given, and do not retry the same action with different
+arguments.
 
 Sequences arrive as plain ACGU/T strings. Keep answers concise and grounded in the tool
 results you actually received."""
@@ -85,6 +105,9 @@ def _summarize(call: Dict[str, Any], registry: Optional[Registry] = None) -> str
         verb = "Enable" if name == "activate_tool" else "Disable"
         return f"{verb} the tool '{target}' (currently {_tool_state(registry, target)})"
 
+    if name == "confirm_data_profile":
+        return _summarize_profile(args.get("spec") or {})
+
     if name == "start_training":
         plan = args.get("plan") or {}
         return (
@@ -109,6 +132,21 @@ def _summarize(call: Dict[str, Any], registry: Optional[Registry] = None) -> str
     return f"{name}({args})"
 
 
+def _summarize_profile(spec: Dict[str, Any]) -> str:
+    row_counts = ((spec.get("split") or {}).get("row_counts")) or {}
+    counts = "/".join(str(row_counts.get(k, "?")) for k in ("train", "val", "test"))
+    rows = (spec.get("format") or {}).get("rows")
+    rows_str = f"{rows:,}" if isinstance(rows, int) else "?"
+    file_name = Path(spec.get("path") or "").name or "?"
+
+    return (
+        f"Use column '{spec.get('sequence_column', '?')}' as the sequence and "
+        f"'{spec.get('label_column', '?')}' as a {spec.get('target_type', '?')} target "
+        f"from {file_name} ({rows_str} rows → {counts} train/val/test), and build task "
+        f"'{spec.get('task_name', '?')}'"
+    )
+
+
 def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[str, Any]:
     """Everything the human should see before approving — notably the exact command."""
     args = call.get("args", {})
@@ -121,6 +159,10 @@ def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[
         details["after_approval"] = (
             "active" if call["name"] == "activate_tool" else "disabled"
         )
+
+    if call["name"] == "confirm_data_profile":
+        details["spec"] = args.get("spec") or {}
+        details["warnings"] = (args.get("spec") or {}).get("warnings")
 
     if call["name"] == "start_training":
         plan = args.get("plan") or {}
@@ -143,6 +185,122 @@ def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[
             details["staging_path"] = str(stage.package_dir)
 
     return details
+
+
+def _path_covered(path: str, whitelist) -> bool:
+    for pattern in whitelist:
+        if pattern == path:
+            return True
+        if pattern.endswith(".*") and path.startswith(pattern[:-1]):
+            return True
+    return False
+
+
+def _get_path(obj: Any, path: str) -> Any:
+    parts = path.split(".")
+    node = obj
+    for i, part in enumerate(parts):
+        if not isinstance(node, dict):
+            return None
+        # "overrides" (a training plan's config overrides) is a FLAT dict keyed by
+        # dotted strings ("optim.lr"), not a nested structure — everything after it is
+        # one key, not further path segments.
+        if part == "overrides" and i + 1 < len(parts):
+            return (node.get("overrides") or {}).get(".".join(parts[i + 1:]))
+        if part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _set_path(obj: Any, path: str, value: Any) -> None:
+    parts = path.split(".")
+    node = obj
+    for i, part in enumerate(parts[:-1]):
+        if part == "overrides" and i + 1 < len(parts):
+            if not isinstance(node.get("overrides"), dict):
+                node["overrides"] = {}
+            node["overrides"][".".join(parts[i + 1:])] = value
+            return
+        if not isinstance(node.get(part), dict):
+            node[part] = {}
+        node = node[part]
+    node[parts[-1]] = value
+
+
+def _same_shape(old: Any, new: Any) -> bool:
+    """Numbers may cross int/float; anything else must keep its type."""
+    if old is None:
+        return True
+    if isinstance(old, (int, float)) and not isinstance(old, bool):
+        return isinstance(new, (int, float)) and not isinstance(new, bool)
+    return type(old) is type(new)
+
+
+def _apply_edits(args: Dict[str, Any], edits: Optional[Dict[str, Any]], tool_name: str) -> Dict[str, Any]:
+    """Apply human `field=value` edits from the approval gate onto a tool's arguments.
+
+    Whitelist-only (`EDITABLE_ARGS`) and type-checked — an edit naming a path the tool
+    does not declare editable, or changing a value's type, is refused rather than
+    silently ignored (plan §5). Every edit actually applied is recorded on the mutated
+    top-level object itself (`spec["human_edits"]` / `plan["human_overrides"]`) so no
+    later surface can present an edited value as if the system had recommended it.
+    """
+    if not edits:
+        return args
+
+    whitelist = EDITABLE_ARGS.get(tool_name)
+    if not whitelist:
+        raise ValueError(
+            f"'{tool_name}' has no editable fields; {sorted(edits)} cannot be applied."
+        )
+
+    import copy
+
+    args = copy.deepcopy(args)
+    changes: Dict[str, Dict[str, Any]] = {}
+
+    for path, new_value in edits.items():
+        if not _path_covered(path, whitelist):
+            raise ValueError(
+                f"'{path}' is not editable for '{tool_name}'. Editable fields: "
+                f"{', '.join(whitelist)}."
+            )
+
+        old_value = _get_path(args, path)
+        # A CLI/UI edit arrives untyped: 'positive_class=1' means the string class label
+        # '1', not the number 1, whenever the field it targets is itself a string (class
+        # labels, task names, columns are never numbers here even when the data's own
+        # labels look like integers). Coerce back to the field's own type rather than
+        # rejecting a perfectly sensible edit typed the natural way.
+        if isinstance(old_value, str) and isinstance(new_value, (int, float)) and not isinstance(new_value, bool):
+            new_value = str(new_value)
+
+        if not _same_shape(old_value, new_value):
+            raise ValueError(
+                f"'{path}' cannot change type from {type(old_value).__name__} to "
+                f"{type(new_value).__name__}."
+            )
+
+        _set_path(args, path, new_value)
+        changes[path] = {"recommended": old_value, "chosen": new_value}
+
+    if changes:
+        top_key = next(iter(whitelist)).split(".", 1)[0]
+        record_key = "human_overrides" if top_key == "plan" else "human_edits"
+        target = args.get(top_key)
+        if isinstance(target, dict):
+            target[record_key] = changes
+
+            if top_key == "plan":
+                # The gate shows plan["command"] verbatim (§4/§8): a training plan whose
+                # overrides changed but whose command did not would mean the human
+                # approved one command and a different one actually ran.
+                from adaptrna_agentic.profiling.recommender import build_command
+
+                target["command"] = build_command(target)
+
+    return args
 
 
 def build_orchestrator_graph(
@@ -229,10 +387,13 @@ def build_orchestrator_graph(
                 output = f"Unknown tool '{call['name']}'. Use list_tools to see what exists."
             else:
                 try:
-                    # handle_tool_error=True turns ToolExceptions (refusals, validation)
-                    # into result strings; anything else is caught here so one bad call
-                    # never kills the turn.
-                    output = tools[call["name"]].invoke(call["args"])
+                    # Edits are applied to a *copy* of the model's original args before
+                    # the tool ever sees them — the gated tool itself never has to know
+                    # this mechanism exists. handle_tool_error=True turns ToolExceptions
+                    # (refusals, validation) into result strings; anything else is caught
+                    # here so one bad call never kills the turn.
+                    args = _apply_edits(call["args"], (decision or {}).get("edits"), call["name"])
+                    output = tools[call["name"]].invoke(args)
                 except Exception as exc:  # noqa: BLE001
                     output = f"Tool '{call['name']}' failed: {exc}"
 

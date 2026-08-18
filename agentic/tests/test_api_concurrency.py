@@ -24,9 +24,9 @@ SEQS = ["GGCAUUACGGCUUAAGCUAGCUAGCUAAGGCC", "AUGCAUGCAUGCAUGCAUGCAUGCAUGCAUGC"]
 
 
 @pytest.fixture
-def client(nano_registry, nano_splice_adapter, nano_mrl_adapter, tmp_path):
+def client(nano_registry, nano_splice_adapter, nano_regression_adapter, tmp_path):
     nano_registry.register(nano_splice_adapter)
-    nano_registry.register(nano_mrl_adapter)
+    nano_registry.register(nano_regression_adapter)
     app, services = build_test_app(nano_registry, tmp_path / "s.sqlite",
                                    script=[AIMessage(content="ok")])
 
@@ -45,12 +45,12 @@ def test_concurrent_predictions_for_different_adapters_stay_correct(client):
     # Establish each tool's answer serially first, then demand the same answers under
     # concurrency. A raced `set_adapter` shows up as one tool returning the other's.
     baseline = {
-        "splice_site": predict("splice_site")[1]["predictions"],
-        "mrl": predict("mrl")[1]["predictions"],
+        "demo_binary": predict("demo_binary")[1]["predictions"],
+        "demo_regression": predict("demo_regression")[1]["predictions"],
     }
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(predict, ["splice_site", "mrl"] * 6))
+        results = list(pool.map(predict, ["demo_binary", "demo_regression"] * 6))
 
     for name, body in results:
         assert body["tool"] == name
@@ -83,7 +83,7 @@ def test_predictions_are_serialised_by_the_runtime(nano_registry, nano_splice_ad
     runtime._ensure_tool = instrumented
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(lambda _: runtime.predict("splice_site", SEQS[:1]), range(6)))
+        list(pool.map(lambda _: runtime.predict("demo_binary", SEQS[:1]), range(6)))
 
     assert max(overlaps) == 1, f"predictions overlapped: {overlaps}"
 
@@ -102,7 +102,7 @@ def test_a_slow_prediction_does_not_block_health(client, monkeypatch):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         prediction = pool.submit(
-            test_client.post, "/api/tools/splice_site/predict", json={"sequences": SEQS[:1]}
+            test_client.post, "/api/tools/demo_binary/predict", json={"sequences": SEQS[:1]}
         )
         time.sleep(0.1)
 

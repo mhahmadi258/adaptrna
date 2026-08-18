@@ -15,6 +15,7 @@ knows how to describe.
 6. [Sessions](#6-sessions)
 7. [Disk usage](#7-disk-usage)
 8. [Known limitations](#8-known-limitations)
+9. [Clean slate: resetting to zero tools](#9-clean-slate-resetting-to-zero-tools)
 
 ---
 
@@ -38,6 +39,7 @@ install status: WARN
   [ok  ] artifacts: 5 tool(s), all artifacts present
   [ok  ] external_tools: 2 external tool(s) importable
   [ok  ] custom_tasks: 1 generated task(s) import cleanly
+  [ok  ] template_version: current template version: v2
   [ok  ] jobs: 6 job record(s), all consistent
   [WARN] staging: 2 staged artifact(s) never landed or cleaned (14 KB): [...]
            -> review with `list_staged_code`, then land it or `toolhub prune staging`
@@ -52,6 +54,7 @@ install status: WARN
 | `orphan_artifacts` | — | adapter files no tool references | `toolhub prune artifacts` |
 | `external_tools` | a package is no longer importable | — | reinstall it, or remove the tool |
 | `custom_tasks` | a generated task fails to import | — | fix `adaptrna_custom/tasks/…`, or delete the package |
+| `template_version` | — | a landed task's `spec.json` was rendered by a template version older than the current one | not automatic by design (landed code is yours) — review the current template's diff and re-render by hand if you want the fix |
 | `stale_jobs` | a record says `running` but the process is gone/recycled | — | ⚠️ the printed remedy names a command that does not exist — see below |
 | `job_outputs` | — | a succeeded job's output directory is gone | harmless if pruned deliberately |
 | `staging` | — | generated code never landed or cleaned | `list_staged_code`, then land or prune |
@@ -91,10 +94,9 @@ $toolhub prune runs --older-than 7
 ```
 ```
 prune runs: would remove 2 item(s), 41.3 MB
-  - splice_simple_lora_20260812_223641 (20.6 MB, 8.4d old)
-  - splice_site_acceptor_lora_20260812_184704 (20.7 MB, 8.4d old)
-  · kept splice_donor_lora — produced the registered tool 'splice_site'
-  · kept splice_simple_lora_20260813_101810 — produced the registered tool 'splice_simple'
+  - my_task_lora_20260812_223641 (20.6 MB, 8.4d old)
+  - my_other_task_lora_20260812_184704 (20.7 MB, 8.4d old)
+  · kept my_task_lora_20260813_101810 — produced the registered tool 'my_task'
 
 This was a dry run. Add --yes to perform it.
 ```
@@ -285,3 +287,38 @@ Each of these is a deliberate design choice with a recorded rationale, not an ov
 | **Deactivation does not free memory** | peft cannot cleanly uninject an adapter; resident adapters cost megabytes. `rebuild()` is the full cleanup. |
 | **Single-user posture** | Loopback, one token, and the only thing deletable over HTTP is your own conversation. A deliberate design, not a starting point for a shared deployment. |
 | **Linux only** | `/proc/<pid>/stat` for PID identity; `resource.setrlimit` + `os.setsid` for the sandbox |
+
+## 9. Clean slate: resetting to zero tools
+
+A fresh install of this build should show **no registered tools** — that is a documented
+fact elsewhere ([README.md](../README.md#10-verified-facts)), not just a default. It is not,
+however, automatic: nothing on upgrade deletes a tool you already registered, because
+deleting a user's registered tool is a human action at the CLI, the same reason there is no
+delete endpoint in the API (§5 above).
+
+If your install carries a tool registered in an earlier session and you want the platform to
+actually start from zero — matching a documentation walkthrough, or preparing a demo — reset
+it by hand, in this order:
+
+```bash
+python -m adaptrna_agentic.cli.toolhub remove <tool_name>       # once per registered tool
+rm adaptrna_custom/tools/<wrapper>.py                            # if it was a landed wrapper
+python -m adaptrna_agentic.cli.toolhub prune staging             # dry run
+python -m adaptrna_agentic.cli.toolhub prune staging --yes       # drops anything never landed
+python -m adaptrna_agentic.cli.toolhub list                      # expect: no tools
+```
+
+This is **not** something the platform runs on upgrade or on its own — it is written down so
+the sequence is repeatable, not so it is automated. Two things it deliberately leaves alone:
+
+* **The backbone configuration** (`toolhub_data/tools.json`'s `backbone` block) — that is
+  what the hub serves, not a tool, and resetting the tool list should not make the platform
+  forget where the checkpoint lives.
+* **`jobs_data/jobs.json` and `outputs/*`** — historical records of training runs stay.
+  `analyze_run` on an old job still works; since the knowledge base carries no reference band
+  for any task any more, it reports a **baseline** verdict rather than a reference-band
+  comparison, which is accurate — the platform no longer has special knowledge of any task.
+
+`adaptrna_custom/tasks/` needs no equivalent reset in the same sense: a task package left
+there after a tool reset simply has no tool pointing at it any more, and remains trainable
+(`recommend_training_config` can still target it) until you delete the directory yourself.

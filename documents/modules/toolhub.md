@@ -31,10 +31,9 @@ LangChain import — the bridge to the agents lives in
 | `manifest.py` | 203 | Dataclasses + JSON I/O for `tools.json`. Pure data; never imports the engine. |
 | `registry.py` | 348 | register / activate / deactivate / remove / list / verify / configure_backbone. Imports the engine only to *validate adapter files*. |
 | `runtime.py` | 314 | `AdapterRuntime`: lazy backbone, residency, serialised inference, smoke tests. |
-| `external/contract.py` | 200 | The wrapper contract: spec dataclasses, loader, install helpers, golden runner. |
-| `external/vienna.py` | 101 | The hand-written reference wrapper, and the template the ToolSmith imitates. |
+| `external/contract.py` | 200 | The wrapper contract: spec dataclasses, loader, install helpers, golden runner. Since Phase 13 (D2) it stands alone — the reference wrapper that used to sit beside it is deleted; see §5. |
 | `errors.py` | 15 | `ToolHubError`, `ConcurrentModificationError`. Separate module to avoid import cycles. |
-| `doctor.py` | 241 | Read-only health checks, each with a remedy. |
+| `doctor.py` | 241+ | Read-only health checks, each with a remedy, including a `template_version` staleness check (§7). |
 | `prune.py` | 291 | The one destructive command in the project. |
 
 ```mermaid
@@ -49,7 +48,6 @@ flowchart LR
     DOC["doctor.py"] --> REG
     PR["prune.py"] --> REG
     REG -.-> EXT["external/contract.py"]
-    EXT --> VIE["external/vienna.py"]
 ```
 
 ## 2. `manifest.py` — state on disk
@@ -126,6 +124,26 @@ serving it would silently pair a fine-tuned head with the pretrained backbone. T
 hub enforces this too; checking here fails before anything is copied and states the reason
 up front.
 
+### A registered tool learns about itself from its own spec
+
+Since Phase 13, `register()` reads the task's own approved `DatasetSpec` off disk —
+`discovery.landed_spec(task)`, i.e. `adaptrna_custom/tasks/<task>/spec.json`, written by
+codegen when the task's code was staged ([codegen.md §6](codegen.md#6-stagingpy)) — and
+copies it whole into `entry.provenance["spec"]`. Three things that used to be hardcoded
+per-task-name tables now come from that one object instead:
+
+* **Pad-sensitivity** (below) — `spec["head"]["pad_sensitive"]`.
+* **The output-description note** shown in the tool's description
+  (`agents/tool_factory.py::_output_note`, [agents.md](agents.md#5-tool_factorypy--the-toolhub--langchain-bridge))
+  — `spec["head"]["predict_output"]`.
+* **The output-form validator** the runtime applies during a smoke test and during serving
+  (§4 below) — keyed on `spec["target_type"]`.
+
+A tool with no spec — registered by CLI from a hand-built adapter, or landed before Phase 13
+— gets none of the three: no note, no special validator, not pad-sensitive. Absence is
+reported, not guessed, and every one of these three readers treats a missing `spec.json` the
+same way.
+
 ### The two-phase artifact write
 
 ```python
@@ -143,12 +161,19 @@ leave an orphaned artifact; manifest-first would leave an entry pointing at noth
 ### Serving policy
 
 ```python
-PAD_SENSITIVE_TASKS = {"mrl"}
+spec = discovery.landed_spec(task)
+pad_sensitive = bool(((spec or {}).get("head") or {}).get("pad_sensitive"))
 ```
 
-If no `batch_size` is given and the task is in that set, `serving.batch_size` is set to `1`
-and a sentence is appended to the description explaining why. MRL's head sees padding
-through biases and InstanceNorm, so batch composition would change predictions.
+If no `batch_size` is given and the task's spec marks its head `pad_sensitive` (Phase 13 —
+previously a hardcoded `PAD_SENSITIVE_TASKS` set with one member), `serving.batch_size` is
+set to `1` and a sentence is appended to the description explaining why. A regression head
+that mean-pools over the sequence is the shape this matters for: padding participates in the
+pooled representation, so batch composition would change predictions. `target_shapes.yaml`
+marks `regression: pad_sensitive: true` and the other two shapes `false`
+([profiling-and-knowledge.md](profiling-and-knowledge.md)) — every task built from that
+recipe gets the right serving policy automatically, not just the one shipped example that
+used to carry it.
 
 ## 4. `runtime.py` — one backbone, all adapters
 
@@ -204,14 +229,17 @@ covers tools registered or re-activated after the hub was built.
 `smoke_test` returns `{name, task, ok, checks: [str], outputs}`. Checks applied:
 
 * one output per input sequence;
-* a per-task **output-form validator**:
+* an **output-form validator**, chosen by `_validator_for(entry)` (Phase 13 — previously a
+  `_VALIDATORS` dict keyed by task name; now keyed by the tool's own recorded
+  `target_type`, so every generated or rendered task gets a real validator, not just the
+  tasks someone happened to hardcode one for):
 
-| Task | Validator asserts |
+| `entry.provenance["spec"]["target_type"]` | Validator asserts |
 |---|---|
-| `splice_site` | one finite probability per sequence, within `[0, 1]` |
-| `mrl` | one finite scalar per sequence, non-negative (the engine clamps at 0) |
-| `sec_struct` | a square matrix per sequence whose side equals the sequence length |
-| *anything else* | `_validate_generic`: no non-finite values |
+| `binary` | one finite probability per sequence, within `[0, 1]` |
+| `multiclass` | a class label from the spec's recorded `classes`, per sequence, plus per-class probabilities |
+| `regression` | one finite scalar per sequence, in the original target scale |
+| no spec, or an unrecognised type | `_validate_generic`: no non-finite values |
 
 * optional exact comparison against `test.expected` within `test.tolerance` (default 1e-4).
 
@@ -231,7 +259,7 @@ A wrapper module must:
    the call boundary with the install hint, and validation tests run without it.
 
 ```python
-PackageSpec(pip="ViennaRNA", import_name="RNA")
+PackageSpec(pip="<distribution-name>", import_name="<top_level_module>")
 GoldenCase(args={...}, expect={...})           # exact, or {"approx": x, "tol": t}
 FunctionSpec(name, description, golden=(...))  # description becomes the tool description
 ExternalToolSpec(name, description, package, functions)   # name is the family prefix
@@ -247,19 +275,26 @@ ExternalToolSpec(name, description, package, functions)   # name is the family p
 | `run_golden(entry)` | Report in the same shape as `smoke_test`. A disabled tool returns `ok: false` with the activate hint. |
 | `golden_as_dicts(fn)` | Goldens as plain dicts, so the manifest entry is self-contained. |
 
-### The reference wrapper (`vienna.py`)
+### No reference wrapper any more (Phase 13, D2)
 
-Two functions, `fold(sequence)` and `cofold(sequence_a, sequence_b)`, each returning
-`{"structure": str, "mfe": float}`. `_clean()` upper-cases, maps `T→U`, rejects empty input
-and non-ACGU characters — **before** `import RNA`.
+Through Phase 12 this section documented `external/vienna.py`, a hand-written ViennaRNA
+wrapper kept beside `contract.py` for two roles: a real usable tool, and — read verbatim
+into `codegen/prompts.py::external_tool_prompt` — the shipped implementation a ToolSmith
+generation attempt was told to imitate. Phase 13 deletes it outright, for the same reason
+D6 removed the platform's shipped-task worked example from task generation: keeping one
+"imitate this shipped implementation" reference and deleting the other would leave the
+platform's only surviving reference implementation the one kind of code where it is least
+defensible to have one at all (`plans/PHASE_13_COLD_START_SINGLE_CSV.md` §1.1).
 
-Golden cases are pinned against ViennaRNA 2.7.2 and mix two kinds of evidence: an *a
-priori* case (`AAAA…` cannot pair with itself → all dots, 0.0) and captured cases (the
-classic hairpin `GGGGAAAACCCC` → `((((....))))` at −5.4). The cofold golden documents a
-non-obvious detail: the returned structure spans both strands with the `&` dropped, so 8+8
-bases give a 16-character string.
-
-This module is read verbatim into the ToolSmith prompt as the template to imitate.
+What survives is `contract.py` alone — 200 lines of typed specification
+(`ExternalToolSpec`, `FunctionSpec`, `GoldenCase`, `PackageSpec`) plus the loader that
+refuses a module declaring a function it does not define. That loader was always the real
+gate on a generated wrapper, and it is unchanged; only the worked example that sat beside it
+is gone. `codegen/prompts.py::external_tool_prompt` now carries the full `contract.py`
+source and nothing else ([codegen.md §8](codegen.md#8-promptspy--the-fallback-paths-context)).
+A wrapper the ToolSmith writes today is judged purely against the contract's shape and its
+own golden cases — there is no longer a second, unstated bar of "does it look like the one
+we shipped".
 
 ## 6. `errors.py`
 
@@ -286,6 +321,7 @@ The overall status is the worst individual one.
 | `orphan_artifacts` | — | adapter files no tool references |
 | `external_tools` | a registered external tool's package is not importable | — |
 | `custom_tasks` | a generated task fails to import | — |
+| `template_version` | — | a landed task's `spec.json` records a `template_version` older than `codegen.templates.render.TEMPLATE_VERSION` — the task was rendered from a since-superseded template. Never auto-regenerated: landed code is the user's from the moment it lands ([codegen.md](codegen.md#2-codegentemplates--the-deterministic-path)); the remedy is to review the current template's diff and re-render by hand if wanted. A task with no `template_version` (the LLM fallback path, or landed before Phase 13) is simply not checked. |
 | `stale_jobs` | a record says `running` but the process is gone or its PID was recycled | — |
 | `job_outputs` | — | a succeeded job's output directory is gone |
 | `staging` | — | staged artifacts never landed or cleaned |
@@ -343,32 +379,32 @@ registry = Registry()                       # or Registry("/tmp/my_hub")
 runtime  = AdapterRuntime(registry)         # nothing is loaded yet
 
 registry.configure_backbone(weights="~/.cache/rinalmo_pretrained/giga-v1.pt")
-entry = registry.register("outputs/my_run/splice_site_adapter.pt",
-                          name="donor", description="Donor sites, 400 nt windows")
+entry = registry.register("outputs/my_run/my_task_adapter.pt",
+                          name="my_tool", description="A tool trained on my_task")
 
-runtime.predict("donor", ["ACGU..."])       # backbone loads HERE, on first use
-runtime.smoke_test("donor")
+runtime.predict("my_tool", ["ACGU..."])     # backbone loads HERE, on first use
+runtime.smoke_test("my_tool")
 
-registry.deactivate("donor")                # routing-level; weights stay resident
+registry.deactivate("my_tool")              # routing-level; weights stay resident
 ```
 
-External tools:
+External tools (`<your_tool>` is a module under `adaptrna_custom/tools/` — see
+[codegen.md](codegen.md), there is no shipped example any more, D2):
 
 ```python
 from adaptrna_agentic.toolhub.external import contract
 
-spec, module = contract.load_spec("adaptrna_agentic.toolhub.external.vienna")
+spec, module = contract.load_spec("adaptrna_custom.tools.<your_tool>")
 if not contract.is_available(spec.package):
     print("Would run:", " ".join(contract.install_command(spec.package)))   # gate here
     contract.install(spec.package)
-registry.register_external("adaptrna_agentic.toolhub.external.vienna")
-contract.run_golden(registry.get("vienna_fold"))
+registry.register_external("adaptrna_custom.tools.<your_tool>")
+contract.run_golden(registry.get("<your_tool>_<function>"))
 ```
 
 Generated wrappers in `adaptrna_custom/tools/` are importable because
 `register_external` (and `build_agent_tools` at startup) calls `discovery.ensure_importable()`,
-which puts the repo root on `sys.path`. Built-in wrappers like `vienna.py` live inside the
-installed package and have always been importable.
+which puts the repo root on `sys.path`.
 
 ## 10. Assumptions and limitations
 

@@ -99,6 +99,19 @@ summary is fine. So the *decisions* stay in Python and the *language* stays in t
   The harness has already run the code; the agent judges only what a test cannot — whether
   the code does what the user asked, and whether non-tensor state or a boundary-token
   mistake would produce plausible-looking wrong numbers.
+* The **DataProfiler** reads exactly one delimited table and proposes an interpretation —
+  columns, target type, split, quality/leakage warnings — with no LLM call and no matching
+  against a fixed set of shapes; it just reads the file. Judgment enters at gate 1, when a
+  human approves or edits that proposal.
+* **Codegen is deterministic on the common path.** `create_task_tool` renders the data
+  loader and head from a reviewed template whenever the approved spec is one the template
+  declares it covers (binary/multiclass/regression, a valid split) — zero model calls. The
+  LLM-backed ToolSmith/Verifier loop of §7 below only runs as the fallback, for the specs
+  the template does not cover or whose rendered code fails verification. So on the common
+  path, the *only* LLM call anywhere in flow D is the Orchestrator narrating the result.
+
+Full detail: [`documents/modules/profiling-and-knowledge.md`](modules/profiling-and-knowledge.md)
+and [`documents/modules/codegen.md`](modules/codegen.md).
 
 ## 3. The orchestrator graph
 
@@ -159,14 +172,29 @@ sequenceDiagram
     G-->>U: answer
 ```
 
-The gated set is `GATED_TOOLS = ("start_training", "register_trained_adapter",
-"land_generated_code", "activate_tool", "deactivate_tool")` — GPU hours, a new servable
-tool, code written into your repository, and changing which tools the assistant may run.
+The gated set is `GATED_TOOLS = ("confirm_data_profile", "start_training",
+"register_trained_adapter", "land_generated_code", "activate_tool", "deactivate_tool")` —
+approving a dataset interpretation, GPU hours, a new servable tool, code written into your
+repository, and changing which tools the assistant may run.
 
-The first three are gated for cost and blast radius; the toggles are gated for **authority**
+`confirm_data_profile` is gated because it is the human decision the rest of the flow is
+built on: the approved (and possibly edited) spec is what `create_task_tool` renders code
+from, so a wrong column or target type approved here propagates everywhere downstream. The
+next three are gated for cost and blast radius; the toggles are gated for **authority**
 (Phase 10). Enabling a tool is cheap and reversible, but the switch is how the user states
 which capabilities they trust — so an assistant that flips it to unblock itself has overruled
 them. See [agents.md §4](modules/agents.md#4-the-approval-gate).
+
+**A gated call's arguments can carry human edits.** A decision is `{approved, note,
+edits}`, where `edits` is a dotted-path → value map (`"spec.positive_class": "0"`,
+`"plan.overrides.trainer.max_epochs": 3`) applied to a *copy* of the model's original
+arguments before the tool runs — never to the tool call itself. Each gated tool declares
+which paths are editable in `EDITABLE_ARGS`; an edit outside that whitelist, or one that
+changes a value's type, is refused. `land_generated_code` deliberately has no editable
+fields: editing staged code at the gate would mean re-verifying a version the harness never
+saw. Every edit that is applied is recorded on the object the tool returns
+(`spec["human_edits"]` / `plan["human_overrides"]`) so no later surface can present an
+edited value as if the system had recommended it.
 
 Two helpers build what the human sees:
 
@@ -226,9 +254,11 @@ Four properties worth internalising:
 3. **Deactivation is routing-level.** peft cannot cleanly uninject an adapter, so a
    disabled tool is refused at the `Registry`/`AdapterRuntime` boundary while its weights
    stay resident (megabytes). `rebuild()` drops the hub entirely for full cleanup.
-4. **Serving policy is per tool.** `serving.batch_size` in the manifest; `mrl` is forced to
-   `1` at registration because its head is pad-sensitive (predictions would depend on batch
-   composition).
+4. **Serving policy is per tool.** `serving.batch_size` in the manifest; a tool whose
+   landed `spec.json` marks `head.pad_sensitive` (regression's pooled head is, by recipe —
+   see [modules/profiling-and-knowledge.md](modules/profiling-and-knowledge.md)) is forced
+   to `1` at registration, because its predictions would otherwise depend on batch
+   composition.
 
 ## 6. Training data flow
 
@@ -245,12 +275,14 @@ sequenceDiagram
     participant AN as RunAnalyzer
     participant RG as Registry
 
-    U->>O: "what's in ~/data?"
+    U->>O: "profile ~/data.csv"
     O->>P: profile_dataset(path)
-    P-->>O: shape, lengths, target type, layout_match
+    P-->>O: proposed DatasetSpec — columns, target type, split, warnings, similar_tasks
+    U->>O: APPROVAL GATE — confirm_data_profile, editable
+    O->>O: task built from the approved spec (flow D)
     U->>O: "recommend a setup"
-    O->>R: recommend_training_config(...)
-    R->>KB: arm settings, task bands, caveats
+    O->>R: recommend_training_config(spec/task, ...)
+    R->>KB: arm settings, generic derived rules (batch size, epochs), caveats
     R->>RG: backbone the hub actually serves
     R-->>O: plan{source, command, overrides, rationale, warnings, ETA}
     U->>O: "run it"
@@ -284,39 +316,68 @@ Full walkthrough: [workflows/finetuning.md](workflows/finetuning.md).
 
 ## 7. Code-generation data flow
 
+Step 2 (`create_task_tool(spec)`) takes an **approved** `DatasetSpec` — gate 1 already
+happened — and produces `task.py` / `datamodule.py` / `config.yaml` / `spec.json`. There
+are two paths, chosen by a plain predicate over the spec, not by a model:
+
 ```mermaid
 flowchart TD
-    START["create_task_tool(name, description, data_path)"] --> PROF["profile_dataset"]
-    PROF --> LOOP{"attempt ≤ 3"}
+    SPEC["approved DatasetSpec<br/>(from confirm_data_profile)"] --> COVERS{"covers(spec)?<br/>declared fields, in-range values"}
+    COVERS -->|"yes"| RENDER["templates.render(spec)<br/>deterministic, ZERO model calls"]
+    COVERS -->|"no"| LOOP{"attempt ≤ 3"}
     LOOP --> GEN["ToolSmith.generate_task<br/>structured output: 3 files"]
-    GEN --> STAGE["staging.stage_task<br/>mirror of the final layout"]
-    STAGE --> HARNESS["harness.verify_task<br/>sandboxed subprocess, cwd = repo root"]
+    RENDER --> STAGE["staging.stage_task<br/>+ spec.json"]
+    GEN --> STAGE2["staging.stage_task<br/>+ spec.json"]
+    STAGE --> HARNESS["harness.verify_task<br/>sandboxed subprocess, cwd = repo root<br/>ALL 7 checks, against the real file"]
+    STAGE2 --> HARNESS2["harness.verify_task — same 7 checks"]
     HARNESS --> REQ{"required checks<br/>actually ran?"}
+    HARNESS2 --> REQ2{"required checks<br/>actually ran?"}
     REQ -->|"skipped"| FAIL["mark failed:<br/>a skipped check is not a pass"]
-    REQ -->|"all passed"| REVIEW["Verifier.review_task<br/>fresh context"]
+    REQ2 -->|"skipped"| FAIL2["mark failed"]
+    REQ -->|"all passed"| REVIEW["Verifier.review_task<br/>— on the template path: 'does this code<br/>do what the spec says, for this data?'"]
+    REQ2 -->|"all passed"| REVIEW2["Verifier.review_task<br/>fresh context, open-ended review"]
     REVIEW --> OK{"approved?"}
-    OK -->|"yes"| STAGED["staged artifact + diff returned"]
-    OK -->|"no"| FEEDBACK["format_feedback → next attempt"]
-    FAIL --> FEEDBACK
+    REVIEW2 --> OK2{"approved?"}
+    OK -->|"yes"| STAGED["staged artifact + diff returned<br/>result.path = 'template'"]
+    OK2 -->|"yes"| STAGED2["staged artifact + diff returned<br/>result.path = 'generated'"]
+    OK -->|"no, or harness fails"| FB["fall through to the LLM path,<br/>carrying the report as opening feedback<br/>result.fell_back_from_template = true"]
+    FAIL --> FB
+    OK2 -->|"no"| FEEDBACK["format_feedback → next attempt"]
+    FAIL2 --> FEEDBACK
+    FB --> LOOP
     FEEDBACK --> DISCARD["staging.discard"] --> LOOP
     LOOP -->|"exhausted"| GIVEUP["ok=false, nothing written,<br/>history of every attempt"]
-    STAGED --> GATE["APPROVAL GATE<br/>file list + line counts + full diff"]
+    STAGED --> GATE["APPROVAL GATE — land_generated_code<br/>file list + line counts + full diff"]
+    STAGED2 --> GATE
     GATE --> LAND["staging.land → adaptrna_custom/"]
 ```
 
-Two design points make this trustworthy rather than theatrical:
+Three design points make this trustworthy rather than theatrical:
 
+* **A rendered spec is not retried.** The template is a pure function of the spec, so an
+  identical spec that fails the harness would fail identically a second time.
+  `MAX_ITERATIONS` on the template path is effectively 1: a harness failure or a Verifier
+  rejection is read as *"this data is outside the declared space"* and falls through to the
+  LLM path once, carrying the harness report as its opening feedback — it is never retried
+  as a render.
 * **The harness runs from the repository root**, exactly as the JobRunner runs real
-  training. Verifying under a different working directory makes repo-relative data paths
-  unresolvable, which *skips* the data-dependent checks instead of failing them — a harness
-  that passes everything. Hence `REQUIRED_FOR_GENERATED = ("datamodule",
-  "forward_backward", "metrics")`: generated code cannot be approved unless those actually
-  **ran**.
+  training, and it runs the **same seven checks on both paths** — there is no "the template
+  is known good, skip the data-dependent checks" shortcut. Verifying under a different
+  working directory makes repo-relative data paths unresolvable, which *skips* the
+  data-dependent checks instead of failing them — a harness that passes everything. Hence
+  `REQUIRED_FOR_GENERATED = ("datamodule", "forward_backward", "metrics")`: code cannot be
+  approved unless those actually **ran**, whichever path produced it.
 * **Check 6 is an adapter round-trip prediction equivalence test.** Randomise everything
   the adapter is supposed to carry → predict → save → reload into a *fresh* module →
   predict again → require identical outputs. That converts this project's worst silent
   failure (task state that never reaches the adapter file) from a checklist question into a
-  hard test.
+  hard test — and on the template path it is proof the template's own handling of that
+  state is correct, checked once and inherited by every task rendered from it.
+
+The tool result and the gate-2 payload always say which path produced the code
+(`"path": "template"` / `"path": "generated"`, with `fell_back_from_template: true` and a
+reason when it switched) — a human approving a diff is never left unsure whether a model
+wrote the logic in front of them.
 
 Full walkthrough: [workflows/new-task-codegen.md](workflows/new-task-codegen.md).
 
@@ -416,11 +477,11 @@ useful thing to know before changing anything.
 | Construction order is load-bearing: build module → load backbone → inject LoRA → load adapter | The agentic layer **reuses** engine code paths and never reimplements loading |
 | Trainable state outside `head.*` / LoRA keys / declared extras silently does not persist in an adapter file | Harness check 6 (round-trip prediction equivalence) turns this into a hard test |
 | The hub refuses full-FT exports (only the head travels in the file) | Adapter tools are LoRA-only; the pipeline defaults to LoRA; the registry refuses full-FT files with the rationale up front |
-| Pad-sensitive heads (MRL) make predictions depend on batch composition | Per-tool `serving.batch_size`, forced to 1 at registration for `mrl` |
+| Pad-sensitive heads (a pooled regression head) make predictions depend on batch composition | Per-tool `serving.batch_size`, forced to 1 at registration whenever the landed `spec.json` marks `head.pad_sensitive` |
 | `RiNALMoHub.predict` activates an adapter across the whole backbone | Inference serialised by `AdapterRuntime.inference_lock` |
 | Non-autocast half precision trips a dtype promotion in the engine's `TokenDropout` | Serving runs fp32 (`dtype: auto` resolves to *None*, i.e. the model default) |
 | FlashAttention's backward is non-deterministic (forward is deterministic) | Run analysis uses tolerances; a difference inside tolerance is never called a regression |
-| No metric-based checkpoint selection exists — the final epoch is what gets tested | Safe today; adding early stopping would require MRL-style tasks to switch to `val_split=holdout` first |
+| No metric-based checkpoint selection exists — the final epoch is what gets tested | Safe today; adding early stopping would require pad-sensitive/pooled-head tasks to switch to `val_split=holdout` first |
 | `configs/base.yaml` defaults `pretrained_weights` to `weights/giga-v1.pt` relative to the working directory, a path that need not exist | Every plan sets `pretrained_weights` and `lm_config` from the **manifest's** backbone; a hub with no checkpoint warns rather than silently training from random weights |
 | Gradient checkpointing is unconditionally on; `need_attn_weights=True` forces the slow attention path | Do not "optimize" either; attention-map features would need explicit design |
 

@@ -67,27 +67,48 @@ the first pass, so a resumed session does not reprint everything.
 
 ```
   ┌─ approval required ──────────────────────────────────────────
-  │ Train splice_site (lora) — ETA ~7 min, output outputs/…
-  │   would run: /…/python -m adaptrna_agentic.jobs.train_entrypoint --task splice_site …
-  │   output:    outputs/splice_site_acceptor_lora_20260812_185058
-  │   note:      Dataset download required (MRL is ~431 MB).
-  │   write:     adaptrna_custom/tasks/splice_simple/task.py  (166 lines)
-  │   staged in: toolhub_data/staging/splice_simple-ab12cd34
+  │ Train my_task (lora) — ETA ~7 min, output outputs/…
+  │   would run: /…/python -m adaptrna_agentic.jobs.train_entrypoint --task my_task …
+  │   output:    outputs/my_task_lora_20260812_185058
+  │   write:     adaptrna_custom/tasks/my_task/task.py  (166 lines)
+  │   staged in: toolhub_data/staging/my_task-ab12cd34
   │   (open it in your editor to read the code before approving)
   │   ! Quick run: capped at 200 steps. …
   └──────────────────────────────────────────────────────────────
-  approve? [y/N]
+  edit a field, or approve? [field=value … | y/N]
 ```
 
-Only `y`/`yes` approves. `EOF` or `Ctrl-C` counts as a decline (with the note *"the user
-declined at the approval prompt"*), so a piped or interrupted session cannot accidentally
-approve. This function is the **reference implementation** of the gate: the browser modal was
-verified byte-for-byte against its output.
+For `confirm_data_profile` (gate 1) the same box shows the profiler's interpretation
+field by field — `_print_spec_block` prints file, sequence column, label column and class
+counts, ignored columns, the split and its recomputed row counts, the head shape, and the
+task name, in the same order the browser modal's `specSummary` renders them
+([web-ui.md](web-ui.md)).
+
+Before typing `y`/`yes`, a line of the form `field=value` (Phase 13 §5, e.g.
+`positive_class=1` or `split.fractions.train=0.7`) **stages an edit** rather than deciding
+anything — it is echoed back (`staged: field = value`) and the prompt repeats, so several
+edits can be staged before approving. `_parse_edit_value` tries `int`, then `float`, then
+JSON, and falls back to the raw string — so `positive_class=1` stays the string `'1'` (a
+class label, via the dotted-path type coercion in `orchestrator._apply_edits`,
+[agents.md](agents.md#4-the-approval-gate)) while `split.mapping={"train": ["human"]}` parses
+as the dict the split policy needs. Typing `y`/`yes` approves with whatever edits were
+staged (sent as `{"approved": true, "edits": {...}}`); anything else — including a bare
+`n`/`no`, `EOF` or `Ctrl-C` — declines (with the note *"the user declined at the approval
+prompt"* on `EOF`/`Ctrl-C`), so a piped or interrupted session cannot accidentally approve.
+This function is the **reference implementation** of the gate: the browser modal's read-only
+summary was verified byte-for-byte against its output. The browser collects edits through a
+form instead of typed lines ([web-ui.md](web-ui.md)), but both are governed by the identical
+`EDITABLE_ARGS` whitelist on the server ([agents.md](agents.md#4-the-approval-gate)).
 
 ## `toolhub.py`
 
 The management CLI. Fifteen subcommands, no API key, and every error printed as
-`error: <message>` with exit code 1.
+`error: <message>` with exit code 1. The module's own docstring and `--help` text (`register
+outputs/run/<task>_adapter.pt`, `predict <your_tool> --sequences ACGU...`,
+`register-external`'s `e.g. adaptrna_custom.tools.<your_tool>`) use neutral placeholders
+rather than any of the shipped engine tasks — D11's forbidden-string rule reaches docstrings
+and help text as much as executable code, on the reasoning that a `--task <real-task-name>`
+example in `--help` is a capability claim to whoever reads it.
 
 ```bash
 toolhub="python -m adaptrna_agentic.cli.toolhub"     # optionally --data-dir DIR before the subcommand

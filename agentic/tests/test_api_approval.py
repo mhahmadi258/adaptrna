@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 from adaptrna_agentic.jobs.store import JobStore
+from adaptrna_agentic.profiling.profiler import profile_dataset
 from adaptrna_agentic.profiling.recommender import PLAN_SOURCE
 from api_helpers import build_test_app, event_names, stream
 from scripted_model import tool_call
@@ -24,7 +25,7 @@ def client(nano_registry, tmp_path, monkeypatch):
     monkeypatch.setattr("adaptrna_agentic.jobs.store.REPO_ROOT", tmp_path)
 
     plan = {
-        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora",
+        "source": PLAN_SOURCE, "task": "demo_binary", "arm": "lora",
         "output_dir": str(tmp_path / "outputs" / "gated_run"),
         "command": ["/bin/echo", "trained"], "overrides": {},
         "estimated_wall_clock": "~7 min", "warnings": [],
@@ -59,7 +60,7 @@ def test_the_request_carries_what_the_human_needs_to_decide(client):
     request = events[-1]["data"]["requests"][0]
 
     assert request["tool"] == "start_training"
-    assert "splice_site" in request["summary"]
+    assert "demo_binary" in request["summary"]
     assert request["details"]["command"] == ["/bin/echo", "trained"]   # the exact command
 
 
@@ -113,3 +114,59 @@ def test_resuming_with_nothing_pending_is_refused(client):
 
     assert response.status_code == 409
     assert "nothing awaiting approval" in response.json()["error"]
+
+
+# ---------------------------------------------------------------------- edits (Phase 13 §5)
+
+@pytest.fixture
+def profile_client(nano_registry, tmp_path, monkeypatch):
+    """A session whose pending gate is confirm_data_profile, for the edits round trip."""
+    csv_path = tmp_path / "data.csv"
+    rows = ["sequence,label"] + [f"{'ACGU' * 10},{i % 2}" for i in range(40)]
+    csv_path.write_text("\n".join(rows) + "\n")
+    spec = profile_dataset(csv_path)
+
+    app, _ = build_test_app(nano_registry, tmp_path / "s.sqlite", script=[
+        AIMessage(content="", tool_calls=[tool_call("confirm_data_profile", {"spec": spec})]),
+        AIMessage(content="Done."),
+    ])
+
+    yield TestClient(app), spec
+
+
+def _approved_spec(events):
+    import json
+
+    result_events = [e["data"] for e in events if e["event"] == "tool_result"]
+    return json.loads(result_events[0]["content"])
+
+
+def test_edits_in_the_resume_body_reach_the_tool_unmangled(profile_client):
+    test_client, spec = profile_client
+    stream(test_client, f"/api/sessions/{SESSION}/messages", {"text": "profile it"})
+
+    new_name = "renamed_over_http"
+    events = stream(test_client, f"/api/sessions/{SESSION}/resume", {
+        "approved": True, "edits": {"spec.task_name": new_name},
+    })
+
+    assert event_names(events)[-1] == "done"
+    approved = _approved_spec(events)
+    assert approved["task_name"] == new_name
+    assert approved["human_edits"] == {
+        "spec.task_name": {"recommended": spec["task_name"], "chosen": new_name},
+    }
+
+
+def test_an_empty_edits_object_behaves_as_no_edits(profile_client):
+    test_client, spec = profile_client
+    stream(test_client, f"/api/sessions/{SESSION}/messages", {"text": "profile it"})
+
+    events = stream(test_client, f"/api/sessions/{SESSION}/resume", {
+        "approved": True, "edits": {},
+    })
+
+    assert event_names(events)[-1] == "done"
+    approved = _approved_spec(events)
+    assert approved["task_name"] == spec["task_name"]
+    assert "human_edits" not in approved

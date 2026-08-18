@@ -1,18 +1,25 @@
-"""ConfigRecommender: a data profile in, an executable training plan out.
+"""ConfigRecommender: an approved dataset spec in, an executable training plan out.
 
 Deterministic and table-driven (MASTER_PLAN §3.1): every number comes from
 `adaptrna_agentic.knowledge`, and every rationale line is generated from the same
 entries — so what the model tells the user and what the run actually does cannot drift
 apart. The LLM narrates this plan; it never invents a hyperparameter.
+
+Phase 13: there are no known tasks any more, so nothing here derives from a task name.
+The `arm` settings (LoRA lr 3e-4, clip 1.0, stride 3) transfer across tasks and stay
+table-driven; the values that cannot transfer — batch size, epoch count, worker count —
+are DERIVED from the approved `DatasetSpec` a task landed with, by rules in
+`knowledge.derived()`, so the recommender still invents nothing.
 """
 
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import sys
 
 from adaptrna_agentic.knowledge import arm as arm_knowledge
-from adaptrna_agentic.knowledge import task_knowledge_or_generic, template_for, universal
+from adaptrna_agentic.knowledge import derived, generic_knowledge, universal
 from adaptrna_agentic.settings import REPO_ROOT
 from adaptrna_agentic.toolhub.errors import ToolHubError
 
@@ -29,39 +36,45 @@ PLAN_SOURCE = "recommend_training_config"
 
 
 def recommend(
-    profile: Dict[str, Any],
-    task: Optional[str] = None,
+    task: str,
+    spec: Optional[Dict[str, Any]] = None,
     arm: str = "lora",
     quick: bool = False,
     seed: int = 42,
     run_name: Optional[str] = None,
-    task_options: Optional[Dict[str, Any]] = None,
     registry=None,
 ) -> Dict[str, Any]:
     """
-    Build a training plan from a data profile.
+    Build a training plan for a landed task.
 
     Args:
-        profile: output of `profile_dataset`.
-        task: override the profile's matched task.
+        task: the landed task's name (`adaptrna_custom/tasks/<task>/`).
+        spec: the DatasetSpec to derive batch size/epochs from. Defaults to the spec the
+            task itself landed with (`adaptrna_custom/tasks/<task>/spec.json`) — pass one
+            explicitly only to point an *existing* task at a new file of the same shape
+            (reuse, plan §9), which overrides `data.root` without regenerating any code.
         arm: "lora" (default, the only arm that yields a servable tool) or "full_ft".
         quick: truncate the run with the engine's own `trainer.max_steps`.
-        task_options: task-specific `data.*` choices, e.g. {"ss_type": "acceptor"}.
         registry: ToolHub registry supplying the backbone to train against (defaults to
             the configured hub). Training must use the backbone the hub serves, or the
             resulting adapter could not be served next to the existing tools.
     """
-    task = task or profile.get("layout_match")
     if not task:
         raise ToolHubError(
-            "This data does not match any shipped task's layout, so there is nothing to "
-            "train yet. " + (profile.get("layout_reason") or "")
+            "There is no task to train yet. Approve a dataset spec with "
+            "confirm_data_profile and build one with create_task_tool."
         )
 
-    knowledge = task_knowledge_or_generic(task)
+    spec = spec or _landed_spec(task)
+    if spec is None:
+        raise ToolHubError(
+            f"No dataset spec found for '{task}'. This build derives batch size and "
+            f"epoch count from the spec.json a task lands with — land it through "
+            f"confirm_data_profile, create_task_tool and land_generated_code first, or "
+            f"pass spec explicitly."
+        )
+
     arm_spec = arm_knowledge(arm)
-    template = template_for(task)
-    options = dict(task_options or {})
 
     overrides: Dict[str, Any] = {}
     rationale: List[str] = []
@@ -90,21 +103,10 @@ def recommend(
         )
         overrides["pretrained_weights"] = "null"
 
-    # --- data ------------------------------------------------------------------
-    data_root = _data_root(profile, task)
-    overrides["data.root"] = str(data_root)
-    if task == "splice_site":
-        overrides["data.test_root"] = str(_splice_test_root(data_root))
-
-    allowed = (template or {}).get("data_layout", {}).get("key_options", {})
-    for key, value in options.items():
-        dotted = key if key.startswith("data.") else f"data.{key}"
-        if allowed and dotted in allowed and value not in allowed[dotted]:
-            raise ToolHubError(
-                f"'{value}' is not a valid {dotted} for {task}. "
-                f"Options: {allowed[dotted]}"
-            )
-        overrides[dotted] = value
+    # --- data --------------------------------------------------------------------
+    # A single table now, not a directory: the config points straight at the file the
+    # spec names.
+    overrides["data.root"] = spec["path"]
 
     # --- arm settings, straight from the knowledge base -------------------------
     for section in ("optim", "trainer"):
@@ -118,9 +120,6 @@ def recommend(
     for key, value in universal()["trainer"].items():
         overrides[f"trainer.{key}"] = value
 
-    for key, value in (knowledge.get("defaults", {}).get("trainer") or {}).items():
-        overrides.setdefault(f"trainer.{key}", value)
-
     rationale.extend(arm_spec["why"])
     rationale.extend(universal()["why"])
     for mode in arm_spec.get("failure_modes", []):
@@ -130,6 +129,36 @@ def recommend(
 
     if arm == "full_ft":
         warnings.append(arm_spec["artifact_note"])
+
+    # --- derived values: batch size, epochs, workers -----------------------------
+    # Values that cannot transfer across datasets, derived from the approved spec by
+    # rules in the knowledge base rather than invented here.
+    median_length = (spec.get("length") or {}).get("median") or 0
+    batch_rule = derived("batch_size")
+    batch_size = _piecewise_on_median_length(
+        median_length, batch_rule["table"], batch_rule["fallback"]
+    )
+    overrides["data.batch_size"] = batch_size
+    rationale.append(f"data.batch_size {batch_size}: {batch_rule['why']}")
+
+    rows_train = (spec.get("split") or {}).get("row_counts", {}).get("train", 0)
+    epoch_rule = derived("max_epochs")
+    steps_per_epoch = max(1, math.ceil(rows_train / max(batch_size, 1)))
+    max_epochs = _step_budget(
+        steps_per_epoch, epoch_rule["target_steps"], epoch_rule["clamp"]
+    )
+    overrides["trainer.max_epochs"] = max_epochs
+    low, high = epoch_rule["target_steps"]
+    total_steps = max_epochs * steps_per_epoch
+    rationale.append(
+        f"trainer.max_epochs {max_epochs}: {rows_train:,} training rows at batch "
+        f"{batch_size} is {steps_per_epoch:,} steps per epoch; {max_epochs} epochs ≈ "
+        f"{total_steps:,} optimiser steps, inside the {low:,}-{high:,} budget."
+    )
+
+    workers_rule = derived("num_workers")
+    overrides["data.num_workers"] = workers_rule["value"]
+    rationale.append(f"data.num_workers {workers_rule['value']}: {workers_rule['why']}")
 
     # --- quick run --------------------------------------------------------------
     if quick:
@@ -141,10 +170,11 @@ def recommend(
         )
 
     # --- task caveats -----------------------------------------------------------
-    warnings.extend(knowledge.get("caveats", []))
+    generic = generic_knowledge()
+    warnings.extend(generic.get("caveats", []))
 
     # --- assemble ---------------------------------------------------------------
-    run_name = run_name or _run_name(task, arm, options)
+    run_name = run_name or _run_name(task, arm)
     output_dir = f"outputs/{run_name}"
     config_path = _config_path(task)
 
@@ -157,9 +187,9 @@ def recommend(
         "seed": seed,
         "output_dir": output_dir,
         "quick_run": quick,
-        "primary_metric": knowledge["primary_metric"],
-        "reference": knowledge["reference"],
-        "estimated_wall_clock": _eta(knowledge, quick),
+        "primary_metric": spec["head"]["primary_metric"],
+        "reference": generic["reference"],
+        "estimated_wall_clock": _eta(generic, quick),
         "rationale": rationale,
         "warnings": warnings,
     }
@@ -199,6 +229,31 @@ def _render(value: Any) -> str:
     return str(value)
 
 
+def _piecewise_on_median_length(median: float, table: List[List[float]], fallback: int) -> int:
+    """`generic.derived.batch_size`: the largest batch a sequence this long trains
+    comfortably at, per the measured table (shorter sequences -> more headroom -> a
+    larger batch)."""
+    for threshold, batch in table:
+        if median <= threshold:
+            return int(batch)
+    return int(fallback)
+
+
+def _step_budget(steps_per_epoch: int, target_steps: List[int], clamp: List[int]) -> int:
+    """`generic.derived.max_epochs`: the fewest epochs that reach the low end of the
+    optimiser-step budget, clamped to a sane range either way."""
+    low, _high = target_steps
+    lo_clamp, hi_clamp = clamp
+    epochs = math.ceil(low / max(steps_per_epoch, 1))
+    return max(lo_clamp, min(hi_clamp, epochs))
+
+
+def _landed_spec(task: str) -> Optional[Dict[str, Any]]:
+    from adaptrna_agentic.codegen.discovery import landed_spec
+
+    return landed_spec(task)
+
+
 def _config_path(task: str) -> str:
     """A generated task's config lives beside its code, not under engine/configs."""
     from adaptrna_agentic.codegen.discovery import CUSTOM_PACKAGE, TASKS_DIRNAME
@@ -233,32 +288,12 @@ def _resolve_weights(weights: str) -> Path:
     return path
 
 
-def _data_root(profile: Dict[str, Any], task: str) -> Path:
-    path = Path(profile["path"]).expanduser()
-    root = path if path.is_dir() else path.parent
-    return root.resolve()
+def _run_name(task: str, arm: str) -> str:
+    return "_".join([task, arm, datetime.now().strftime("%Y%m%d_%H%M%S")])
 
 
-def _splice_test_root(data_root: Path) -> Path:
-    """The Spliceator benchmark species live in a sibling `test_data/` directory."""
-    sibling = data_root.parent / "test_data"
-    return sibling if sibling.exists() else data_root
-
-
-def _run_name(task: str, arm: str, options: Dict[str, Any]) -> str:
-    parts = [task]
-    for key in ("ss_type", "dataset", "val_split"):
-        value = options.get(key) or options.get(f"data.{key}")
-        if value:
-            parts.append(str(value))
-    parts.append(arm)
-    parts.append(datetime.now().strftime("%Y%m%d_%H%M%S"))
-
-    return "_".join(parts)
-
-
-def _eta(knowledge: Dict[str, Any], quick: bool) -> str:
-    reference = knowledge.get("wall_clock", {}).get("reference") or "unknown"
+def _eta(generic: Dict[str, Any], quick: bool) -> str:
+    reference = generic.get("wall_clock", {}).get("reference") or "unknown"
     if quick:
         return f"a few minutes (truncated); the full run would be {reference}"
     return reference

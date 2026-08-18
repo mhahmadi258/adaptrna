@@ -12,9 +12,6 @@ A wrapper module must:
 Golden `expect` values: plain values compare exactly; `{"approx": x, "tol": t}` compares
 within tolerance. Goldens are captured against the installed package version (recorded in
 the manifest provenance at registration) — never guessed.
-
-`adaptrna_agentic/toolhub/external/vienna.py` is the reference implementation of all of
-the above.
 """
 
 from dataclasses import dataclass, asdict

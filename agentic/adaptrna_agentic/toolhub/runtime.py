@@ -202,7 +202,7 @@ class AdapterRuntime:
             checks.append(f"expected {len(sequences)} outputs, got {len(out_list)}: FAIL")
             ok = False
 
-        validator = _VALIDATORS.get(entry.task, _validate_generic)
+        validator = _validator_for(entry)
         problems = validator(out_list, sequences)
         if problems:
             checks.extend(f"{p}: FAIL" for p in problems)
@@ -230,6 +230,11 @@ class AdapterRuntime:
 
 
 # ---------------------------------------------------------------------- validators
+#
+# Phase 13: keyed by the tool's own recorded target type (`provenance["spec"]["target_
+# type"]`), not a hardcoded task-name set — every generated task gets one, not just one
+# shipped example did (plan §10). A tool with no spec falls back to `_validate_generic`;
+# absence is reported, not guessed.
 
 def _as_floats(outputs) -> Optional[List[float]]:
     try:
@@ -245,7 +250,8 @@ def _validate_generic(outputs, sequences) -> List[str]:
     return []
 
 
-def _validate_splice_site(outputs, sequences) -> List[str]:
+def _validate_binary(outputs, sequences) -> List[str]:
+    """One probability per sequence, in [0, 1] (target_shapes.yaml: binary)."""
     values = _as_floats(outputs)
     if values is None:
         return ["expected one probability per sequence"]
@@ -258,39 +264,47 @@ def _validate_splice_site(outputs, sequences) -> List[str]:
     return problems
 
 
-def _validate_mrl(outputs, sequences) -> List[str]:
+def _validate_regression(outputs, sequences) -> List[str]:
+    """One finite scalar per sequence, in the original target scale (target_shapes.yaml:
+    regression)."""
     values = _as_floats(outputs)
     if values is None:
-        return ["expected one scalar ribosome load per sequence"]
-
-    problems = []
+        return ["expected one scalar value per sequence"]
     if any(not math.isfinite(v) for v in values):
-        problems.append("non-finite predictions")
-    if any(v < 0.0 for v in values):
-        problems.append("negative ribosome load (engine clamps at 0)")
-    return problems
+        return ["non-finite predictions"]
+    return []
 
 
-def _validate_sec_struct(outputs, sequences) -> List[str]:
-    problems = []
-    for output, sequence in zip(outputs, sequences):
-        shape = getattr(output, "shape", None)
-        if shape is None or len(shape) != 2 or shape[0] != shape[1]:
-            problems.append("expected a square base-pairing matrix per sequence")
-            break
-        if shape[0] != len(sequence):
-            problems.append(
-                f"matrix side {shape[0]} does not match sequence length {len(sequence)}"
-            )
-            break
-    return problems
+def _validate_multiclass(outputs, sequences, classes: Sequence[str]) -> List[str]:
+    """A class label from the recorded `classes`, per sequence (target_shapes.yaml:
+    multiclass — "one class label plus per-class probabilities per sequence")."""
+    allowed = {str(c) for c in classes}
+
+    for output in outputs:
+        label = output.get("label") if isinstance(output, dict) else None
+        if label is None:
+            return [f"expected a class label per sequence, got {output!r}"]
+        if allowed and str(label) not in allowed:
+            return [f"label {label!r} is not one of the recorded classes {sorted(allowed)}"]
+
+    return []
 
 
-_VALIDATORS = {
-    "splice_site": _validate_splice_site,
-    "mrl": _validate_mrl,
-    "sec_struct": _validate_sec_struct,
-}
+def _validator_for(entry: ToolEntry):
+    spec = (entry.provenance or {}).get("spec")
+    if not spec:
+        return _validate_generic
+
+    target_type = spec.get("target_type")
+    if target_type == "binary":
+        return _validate_binary
+    if target_type == "regression":
+        return _validate_regression
+    if target_type == "multiclass":
+        classes = spec.get("classes") or []
+        return lambda outputs, sequences: _validate_multiclass(outputs, sequences, classes)
+
+    return _validate_generic
 
 
 def _compare_expected(outputs, expected, tolerance: float) -> List[str]:

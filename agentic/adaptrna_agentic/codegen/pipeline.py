@@ -10,7 +10,8 @@ returns its diff; landing it is a separate, human-approved step.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import json
 
 from adaptrna_agentic.agents import toolsmith, verifier
 from adaptrna_agentic.codegen import harness, staging
@@ -47,6 +48,11 @@ class CodegenResult:
     name: str
     attempts: List[Attempt] = field(default_factory=list)
     stage: Optional[staging.Stage] = None
+    #: "template" (rendered, no model call) or "generated" (ToolSmith/Verifier loop). A
+    #: user must never be unsure which one produced the code they are approving.
+    path: str = "generated"
+    fell_back_from_template: bool = False
+    fallback_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         last = self.attempts[-1] if self.attempts else None
@@ -56,7 +62,11 @@ class CodegenResult:
             "name": self.name,
             "iterations": len(self.attempts),
             "history": [a.summary() for a in self.attempts],
+            "path": self.path,
         }
+        if self.fell_back_from_template:
+            payload["fell_back_from_template"] = True
+            payload["fallback_reason"] = self.fallback_reason
         if last is not None:
             payload["harness"] = harness.summarize(last.harness_report)
             payload["review"] = last.review
@@ -73,9 +83,7 @@ class CodegenResult:
 
 
 def create_task(
-    task_name: str,
-    description: str,
-    profile: Dict[str, Any],
+    spec: Dict[str, Any],
     *,
     sequences: Optional[List[str]] = None,
     max_iterations: int = MAX_ITERATIONS,
@@ -84,16 +92,43 @@ def create_task(
     data_dir=None,
     skip_review: bool = False,
 ) -> CodegenResult:
-    """Generate, verify and review a new task. Leaves it staged; never lands it."""
+    """Build the data loader and head for an approved dataset spec (Phase 13 §7).
+
+    Template-first (D13): a spec fully covered by `codegen/templates/` is rendered
+    deterministically, with no model call, and put through the identical verification —
+    the full harness, then an independent review — as generated code. A harness failure
+    or a review rejection on that path is not an error; it is the signal that this spec
+    is outside the template's declared space, and the pipeline falls through to the
+    ToolSmith/Verifier loop, carrying the harness report and the review's findings as
+    its opening feedback. `max_iterations` bounds only that fallback loop — a
+    deterministic renderer cannot be retried (identical spec in, identical code and
+    identical failure out), so the template path gets exactly one attempt.
+
+    Leaves the result staged; never lands it.
+    """
+    task_name = spec["task_name"]
+    description = spec.get("tool_description") or task_name
     _reject_existing(task_name)
 
     result = CodegenResult(ok=False, kind="task", name=task_name)
     feedback: Optional[str] = None
 
-    for index in range(1, max_iterations + 1):
-        files = toolsmith.generate_task(
-            task_name, description, profile, feedback=feedback, model=toolsmith_model
+    from adaptrna_agentic.codegen.templates import render as templates
+
+    if templates.covers(spec):
+        result.path = "template"
+        approved, feedback = _attempt_template(
+            spec, result, sequences=sequences, data_dir=data_dir,
+            verifier_model=verifier_model, skip_review=skip_review,
         )
+        if approved:
+            result.ok = True
+            return result
+        result.path = "generated"
+
+    for index in range(1, max_iterations + 1):
+        files = toolsmith.generate_task(spec, feedback=feedback, model=toolsmith_model)
+        files["spec.json"] = json.dumps(spec, indent=2, default=str)
 
         try:
             stage = staging.stage_task(task_name, files, data_dir=data_dir)
@@ -132,7 +167,7 @@ def create_task(
         review = None
         if report.get("ok") and not skip_review:
             review = verifier.review_task(
-                description, profile, files, summary, model=verifier_model
+                description, spec, files, summary, model=verifier_model
             )
 
         approved = report.get("ok") and (skip_review or (review is not None and review.approved))
@@ -152,6 +187,91 @@ def create_task(
         staging.discard(stage)
 
     return result
+
+
+def _attempt_template(
+    spec: Dict[str, Any],
+    result: CodegenResult,
+    *,
+    sequences: Optional[List[str]],
+    data_dir,
+    verifier_model,
+    skip_review: bool,
+) -> Tuple[bool, Optional[str]]:
+    """The template path's one attempt. Records it on `result` either way; returns
+    `(approved, feedback_for_the_fallback)`."""
+    from adaptrna_agentic.codegen.templates import render as templates
+
+    task_name = spec["task_name"]
+    description = spec.get("tool_description") or task_name
+
+    files = templates.render(spec)
+    # spec.json records which template version rendered this task (plan §7.3) — a
+    # template fix does not reach already-landed tasks, so `toolhub doctor` needs this to
+    # tell "stale" apart from "never rendered here at all" (the LLM fallback path).
+    landed_spec = dict(spec)
+    landed_spec["template_version"] = templates.TEMPLATE_VERSION
+    files["spec.json"] = json.dumps(landed_spec, indent=2, default=str)
+
+    try:
+        stage = staging.stage_task(task_name, files, data_dir=data_dir)
+    except ToolHubError as exc:
+        result.attempts.append(Attempt(index=0, files=files, harness_report={
+            "ok": False, "task": task_name,
+            "checks": [{"name": "files", "status": "fail", "detail": str(exc)}],
+            "failed": ["files"],
+        }))
+        result.fell_back_from_template = True
+        result.fallback_reason = f"the rendered output could not be staged: {exc}"
+        return False, f"Automated verification:\n{exc}"
+
+    report = harness.verify_task(
+        task_name,
+        task_module=stage.module_path,
+        config_path=str(stage.config_path) if stage.config_path else None,
+        sys_path=[str(stage.root)],
+        sequences=sequences,
+    )
+    summary = harness.summarize(report)
+
+    unmet = harness.unmet_requirements(report)
+    if unmet:
+        report = dict(report)
+        report["ok"] = False
+        report["failed"] = list(report.get("failed") or []) + unmet
+        summary += f"\n  [FAIL] required checks did not run: {unmet}."
+
+    # Not reviewing an author's judgment — there is no author. The narrower question:
+    # does this code do what the spec says, for this data?
+    review = None
+    if report.get("ok") and not skip_review:
+        review = verifier.review_task(
+            description, spec, files, summary, model=verifier_model, rendered=True,
+        )
+
+    approved = report.get("ok") and (skip_review or (review is not None and review.approved))
+    result.attempts.append(Attempt(
+        index=0, files=files, harness_report=report,
+        review=review.model_dump() if review is not None else None, ok=bool(approved),
+    ))
+
+    if approved:
+        result.stage = stage
+        return True, None
+
+    # A template bug report, not a retry: the same spec renders the same code and fails
+    # the same way, so the only meaningful response is the LLM fallback.
+    if not report.get("ok"):
+        result.fallback_reason = "the rendered code failed the verification harness"
+    else:
+        result.fallback_reason = (
+            "the independent review rejected the rendered code — logged as a template "
+            "fitness bug, not a per-task failure"
+        )
+    result.fell_back_from_template = True
+    staging.discard(stage)
+
+    return False, verifier.format_feedback(summary, review)
 
 
 def create_external_tool(

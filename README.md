@@ -1,8 +1,10 @@
 # AdaptRNA
 
 A conversational agent platform for RNA analysis, built on a task-pluggable fine-tuning
-engine. Ask for a prediction and it activates the right adapter; ask for a capability that
-does not exist yet and it fine-tunes one, or writes the task from scratch.
+engine. It ships with **no tools and no task definitions** — you bring one CSV or TSV with
+a sequence column and a label column, and it walks that file through four approved steps to
+a servable tool. Ask for a prediction afterwards and it activates the right adapter on one
+shared backbone.
 
 ```
 engine/           the fine-tuning engine: one frozen backbone, swappable LoRA adapters
@@ -31,23 +33,33 @@ python -m adaptrna_agentic.cli.toolhub config --weights ~/.cache/rinalmo_pretrai
 python -m adaptrna_agentic.cli.toolhub doctor
 ```
 
-## The five things you can ask for
+## From one CSV to a servable tool
 
 ```bash
 python -m adaptrna_agentic.cli.chat --session work
 ```
 
+A fresh install has nothing registered. Point it at a table — `.csv`/`.tsv`, optionally
+gzipped — with one sequence column and one label column (binary, multiclass, or a
+continuous target), and four steps take it from there, each its own turn, each ending in
+your approval:
+
 | Ask | What happens |
 |---|---|
-| *"What tools are available?"* | The registry, with each tool's state and purpose |
-| *"Is this sequence a donor splice site?"* | The matching adapter is activated on the shared backbone and predicts |
-| *"Disable the fold tool"* / *"test it"* | Lifecycle operations; a disabled tool refuses with the fix in the message |
-| *"Fine-tune this data into a tool"* | Profile → **validated** config → **approval** → GPU run → analysis → **approval** → registered |
-| *"No task can read my data — build one"* | Three files written, verified against your data, reviewed → **approval** → landed → trainable |
+| *"Profile ~/data/my_data.csv"* | Reads the file and proposes columns, target type, split and any data-quality warnings (duplicates, leakage, imbalance) — **approval**, editable field by field |
+| *"Build the task"* | The approved spec renders straight into a data loader and head — deterministically, from a reviewed template, whenever the shape is one of the three supported (binary/multiclass/regression); only an unusual spec falls back to writing and verifying code with a model. Either way: a 7-check harness + independent review → **approval on the diff** |
+| *"Recommend a training config"* | Hyperparameters **derived** from the approved spec against a generic, validated knowledge base — no per-task guesswork, because there is no known task yet — **approval**, editable |
+| *"Register it"* | The finished run becomes a servable tool — **approval** |
+
+Once a tool exists: *"What tools are available?"* lists the registry with each tool's
+state and purpose; *"Is this sequence positive?"* activates the matching adapter and
+predicts; *"Disable my_tool"* / *"test it"* are lifecycle operations, and a disabled tool
+refuses with the fix in the message.
 
 Two rules the platform enforces in code rather than by prompt: hyperparameters only ever
-come from the knowledge base of validated runs, and nothing consequential (GPU hours, a
-new servable tool, code written into your repo) happens without your approval.
+come from the knowledge base — validated settings plus rules derived from your own
+approved data, never invented — and nothing consequential (GPU hours, a new servable tool,
+code written into your repo) happens without your approval.
 
 ## In the browser
 
@@ -95,7 +107,7 @@ toolhub=  "python -m adaptrna_agentic.cli.toolhub"
 
 $toolhub list                       # every tool, both kinds
 $toolhub predict <tool> --sequences ACGU...     # adapters
-$toolhub call <tool> sequence=GGGG              # external tools (ViennaRNA, …)
+$toolhub call <tool> sequence=GGGG              # external tools (classical packages you've wrapped)
 $toolhub test <tool>                # smoke / golden tests
 $toolhub doctor                     # what is wrong with this install (changes nothing)
 $toolhub prune staging|artifacts|jobs|runs|sessions [--older-than N] [--yes]

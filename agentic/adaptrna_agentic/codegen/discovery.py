@@ -15,8 +15,9 @@ Three callers rely on it, and all three matter:
 """
 
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import importlib
+import json
 import sys
 
 from adaptrna_agentic.settings import REPO_ROOT
@@ -46,6 +47,24 @@ def custom_task_names() -> List[str]:
         for entry in tasks_dir.iterdir()
         if entry.is_dir() and (entry / "task.py").exists()
     )
+
+
+def landed_spec(task: str) -> Optional[Dict[str, Any]]:
+    """The `DatasetSpec` a task landed with (`spec.json`, plan §7.8), if it has one.
+
+    A task landed before Phase 13, or landed by hand, simply has none — this is reported
+    as absence, never as an error (plan §9/§15): every caller (reuse matching, the
+    recommender's derived values, serving's validators, the doctor's template-version
+    check) treats a missing or unreadable spec.json the same way.
+    """
+    spec_path = CUSTOM_ROOT / TASKS_DIRNAME / task / "spec.json"
+    if not spec_path.is_file():
+        return None
+
+    try:
+        return json.loads(spec_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def task_module_path(name: str) -> str:

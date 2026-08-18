@@ -19,11 +19,6 @@ from adaptrna_agentic.toolhub.manifest import (
     resolve_data_dir,
 )
 
-#: Tasks whose head is pad-sensitive: predictions depend on batch composition (padding
-#: reaches the head through biases + InstanceNorm), so the hub serves them one sequence
-#: at a time. This is MASTER_PLAN §7's per-tool serving policy.
-PAD_SENSITIVE_TASKS = {"mrl"}
-
 DEFAULT_TEST_SEQUENCES = [
     "GGCAUUACGGCUUAAGCUAGCUAGCUAAGGCC",
     "AUGCAUGCAUGCAUGCAUGCAUGCAUGCAUGC",
@@ -132,14 +127,33 @@ class Registry:
             except ValueError:
                 artifact = str(dest)
 
+        # Phase 13: pad-sensitivity is a property of the target-type recipe the task's
+        # own spec.json recorded (true for regression's pooled head), not a hardcoded
+        # task-name set — every landed task gets this, not just one shipped example did.
+        # A tool with no spec (registered from a hand-built adapter, or one landed before
+        # this build) keeps today's behaviour: not pad-sensitive, no note. Absence is
+        # reported, not guessed.
+        from adaptrna_agentic.codegen.discovery import landed_spec
+
+        spec = landed_spec(task)
+        pad_sensitive = bool(((spec or {}).get("head") or {}).get("pad_sensitive"))
+
         serving_batch = batch_size
         pad_note = ""
-        if serving_batch is None and task in PAD_SENSITIVE_TASKS:
+        if serving_batch is None and pad_sensitive:
             serving_batch = 1
             pad_note = (
                 " Served one sequence at a time: the task head is pad-sensitive, so batch "
                 "composition would change predictions."
             )
+
+        provenance = {
+            "source": str(source),
+            "registered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "adapter_metadata": _jsonable_metadata(metadata),
+        }
+        if spec is not None:
+            provenance["spec"] = spec
 
         entry = ToolEntry(
             name=name,
@@ -152,11 +166,7 @@ class Registry:
             artifact=artifact,
             serving={"batch_size": serving_batch},
             test={"sequences": list(test_sequences or DEFAULT_TEST_SEQUENCES), "expected": None},
-            provenance={
-                "source": str(source),
-                "registered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "adapter_metadata": _jsonable_metadata(metadata),
-            },
+            provenance=provenance,
         )
 
         self.manifest.tools[name] = entry
