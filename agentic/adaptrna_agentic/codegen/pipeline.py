@@ -206,7 +206,12 @@ def _attempt_template(
     description = spec.get("tool_description") or task_name
 
     files = templates.render(spec)
-    files["spec.json"] = json.dumps(spec, indent=2, default=str)
+    # spec.json records which template version rendered this task (plan §7.3) — a
+    # template fix does not reach already-landed tasks, so `toolhub doctor` needs this to
+    # tell "stale" apart from "never rendered here at all" (the LLM fallback path).
+    landed_spec = dict(spec)
+    landed_spec["template_version"] = templates.TEMPLATE_VERSION
+    files["spec.json"] = json.dumps(landed_spec, indent=2, default=str)
 
     try:
         stage = staging.stage_task(task_name, files, data_dir=data_dir)

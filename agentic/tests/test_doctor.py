@@ -128,6 +128,78 @@ def test_broken_custom_task_is_a_failure(healthy, monkeypatch):
     assert "broken_task" in _check(report, "custom_tasks")["detail"]
 
 
+def test_template_version_check_ok_with_no_landed_tasks(healthy):
+    report = run_checks(healthy.data_dir)
+
+    assert _status(report, "template_version") == OK
+
+
+def test_stale_template_version_is_a_warning(healthy, monkeypatch):
+    from adaptrna_agentic.codegen.templates.render import TEMPLATE_VERSION
+
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.custom_task_names", lambda: ["old_task"]
+    )
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.landed_spec",
+        lambda task: {"template_version": TEMPLATE_VERSION - 1},
+    )
+
+    report = run_checks(healthy.data_dir)
+
+    assert _status(report, "template_version") == WARN
+    check = _check(report, "template_version")
+    assert "old_task" in check["detail"]
+    assert check["data"]["stale"] == [
+        {"task": "old_task", "template_version": TEMPLATE_VERSION - 1}
+    ]
+
+
+def test_current_template_version_is_not_flagged(healthy, monkeypatch):
+    from adaptrna_agentic.codegen.templates.render import TEMPLATE_VERSION
+
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.custom_task_names", lambda: ["fresh_task"]
+    )
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.landed_spec",
+        lambda task: {"template_version": TEMPLATE_VERSION},
+    )
+
+    report = run_checks(healthy.data_dir)
+
+    assert _status(report, "template_version") == OK
+
+
+def test_a_task_landed_by_the_llm_path_is_not_flagged(healthy, monkeypatch):
+    """No template_version key at all -- generated, not rendered -- must not read as
+    stale."""
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.custom_task_names", lambda: ["generated_task"]
+    )
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.landed_spec",
+        lambda task: {"task_name": "generated_task"},   # no template_version
+    )
+
+    report = run_checks(healthy.data_dir)
+
+    assert _status(report, "template_version") == OK
+
+
+def test_a_task_with_no_spec_json_is_not_flagged(healthy, monkeypatch):
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.custom_task_names", lambda: ["predates_this_build"]
+    )
+    monkeypatch.setattr(
+        "adaptrna_agentic.codegen.discovery.landed_spec", lambda task: None
+    )
+
+    report = run_checks(healthy.data_dir)
+
+    assert _status(report, "template_version") == OK
+
+
 def test_doctor_changes_nothing(healthy):
     """It is a diagnosis, not a repair."""
     before = healthy.manifest.path.read_text()

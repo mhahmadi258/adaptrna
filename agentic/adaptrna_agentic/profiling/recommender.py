@@ -12,7 +12,6 @@ are DERIVED from the approved `DatasetSpec` a task landed with, by rules in
 `knowledge.derived()`, so the recommender still invents nothing.
 """
 
-import json
 import math
 from datetime import datetime
 from pathlib import Path
@@ -250,20 +249,9 @@ def _step_budget(steps_per_epoch: int, target_steps: List[int], clamp: List[int]
 
 
 def _landed_spec(task: str) -> Optional[Dict[str, Any]]:
-    """The DatasetSpec a task landed with (`spec.json`, plan §7.8), if it has one.
+    from adaptrna_agentic.codegen.discovery import landed_spec
 
-    A landed task predating this build, or landed by hand, simply has none — reported as
-    absence, never as an error (plan §15)."""
-    from adaptrna_agentic.codegen.discovery import CUSTOM_ROOT, TASKS_DIRNAME
-
-    spec_path = CUSTOM_ROOT / TASKS_DIRNAME / task / "spec.json"
-    if not spec_path.is_file():
-        return None
-
-    try:
-        return json.loads(spec_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
+    return landed_spec(task)
 
 
 def _config_path(task: str) -> str:

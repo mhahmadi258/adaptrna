@@ -79,14 +79,22 @@ EDITABLE_ARGS = {
     ),
 }
 
-#: Appended to adapter tool descriptions so the model knows the output type. A future
-#: sec_struct adapter returns L×L matrices — its wrapper should cap and summarize rather
-#: than dump matrices into context (see plan §7).
-_TASK_OUTPUT_NOTES = {
-    "splice_site": "Returns one probability per sequence that it contains a splice site.",
-    "mrl": "Returns one predicted mean ribosome load per sequence (original scale).",
-    "sec_struct": "Returns one base-pairing matrix per sequence (large output).",
-}
+def _output_note(entry) -> Optional[str]:
+    """Appended to an adapter tool's description so the model knows the output type — a
+    registered tool describes its own output because its spec says what it predicts
+    (plan §10). A tool whose entry has no spec (registered by CLI from a hand-built
+    adapter, or landed before this build) gets no note: absence is reported, not guessed.
+    """
+    spec = (entry.provenance or {}).get("spec")
+    if not spec:
+        return None
+
+    predict_output = ((spec.get("head") or {}).get("predict_output") or "").strip()
+    if not predict_output:
+        return None
+
+    return f"Returns {predict_output}."
+
 
 _DISABLED_NOTE = (
     " (currently DISABLED — only the user can enable it. You may offer to ask them, which "
@@ -445,7 +453,7 @@ def _adapter_tool(entry, registry: Registry, runtime: AdapterRuntime) -> BaseToo
         return _jsonable(runtime.predict(name, sequences))
 
     description = entry.description
-    note = _TASK_OUTPUT_NOTES.get(entry.task)
+    note = _output_note(entry)
     if note and note not in description:
         description = f"{description} {note}"
     if not entry.active:

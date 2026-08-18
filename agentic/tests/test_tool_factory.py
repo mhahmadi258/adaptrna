@@ -33,7 +33,40 @@ def test_adapter_schema_takes_sequences(loaded):
     tool = _by_name(*loaded)["splice_site"]
 
     assert set(tool.args) == {"sequences"}
-    assert "probability" in tool.description
+
+
+def test_adapter_description_carries_its_own_spec_predict_output(
+    nano_registry, nano_splice_adapter, tmp_path, monkeypatch
+):
+    """Phase 13 §10: a registered tool describes its own output because its own spec
+    says what it predicts — not a hardcoded per-task-name note."""
+    import json
+
+    from adaptrna_agentic.codegen import discovery
+
+    monkeypatch.setattr(discovery, "CUSTOM_ROOT", tmp_path / "adaptrna_custom")
+    task_dir = tmp_path / "adaptrna_custom" / "tasks" / "splice_site"
+    task_dir.mkdir(parents=True)
+    (task_dir / "spec.json").write_text(json.dumps({
+        "head": {"predict_output": "one probability per sequence", "pad_sensitive": False},
+    }))
+
+    nano_registry.register(nano_splice_adapter)
+    runtime = AdapterRuntime(nano_registry)
+
+    tool = _by_name(nano_registry, runtime)["splice_site"]
+
+    assert "one probability per sequence" in tool.description
+
+
+def test_adapter_with_no_landed_spec_gets_no_output_note(loaded):
+    """Absence is reported, not guessed: a hand-built adapter with no spec.json keeps
+    today's plain description."""
+    registry, runtime = loaded
+
+    tool = _by_name(registry, runtime)["splice_site"]
+
+    assert tool.description == registry.get("splice_site").description
 
 
 def test_external_schema_mirrors_wrapper_signature(loaded):

@@ -169,6 +169,25 @@ def test_the_template_path_still_runs_the_independent_review(tmp_path, covered_s
     assert "rendered deterministically" in critic.calls[0][-1]["content"]
 
 
+def test_landed_spec_json_records_the_template_version(tmp_path, covered_spec):
+    """`toolhub doctor` needs this to tell a stale template render apart from a task the
+    LLM path produced, which carries no template version at all (plan §7.3)."""
+    import json
+
+    from adaptrna_agentic.codegen.templates.render import TEMPLATE_VERSION
+
+    name = unique_name()
+
+    result = pipeline.create_task(
+        covered_spec(name), toolsmith_model=ExplodingModel(), skip_review=True,
+        data_dir=tmp_path / "hub",
+    )
+
+    assert result.ok
+    landed = json.loads(result.stage.files[f"adaptrna_custom/tasks/{name}/spec.json"])
+    assert landed["template_version"] == TEMPLATE_VERSION
+
+
 def test_the_staged_result_names_which_path_produced_it(tmp_path, covered_spec):
     """A user must never be unsure whether a human wrote the logic they are approving."""
     name = unique_name()
@@ -199,6 +218,22 @@ def test_a_spec_covers_rejects_goes_straight_to_the_llm_path(tmp_path, dataset, 
     assert result.fell_back_from_template is False
     assert smith.calls
     assert all(attempt.index >= 1 for attempt in result.attempts)
+
+
+def test_generated_spec_json_carries_no_template_version(tmp_path, dataset, uncovered_spec):
+    """Nothing here was rendered, so nothing here claims a template version."""
+    import json
+
+    name = unique_name()
+    smith = ScriptedStructuredModel([generated(files_for(name, dataset))])
+
+    result = pipeline.create_task(
+        uncovered_spec(name), toolsmith_model=smith, skip_review=True, data_dir=tmp_path / "hub",
+    )
+
+    assert result.ok
+    landed = json.loads(result.stage.files[f"adaptrna_custom/tasks/{name}/spec.json"])
+    assert "template_version" not in landed
 
 
 # ---------------------------------------------------------------- fallback on failure

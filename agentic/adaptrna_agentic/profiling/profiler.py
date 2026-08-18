@@ -76,8 +76,69 @@ def _head_from_target_shape(target_type: str) -> Dict[str, Any]:
         "loss": shape["loss"],
         "metrics": list(shape["metrics"]),
         "primary_metric": shape["primary_metric"],
+        "predict_output": shape["predict_output"],
         "pad_sensitive": shape["pad_sensitive"],
     }
+
+
+def _similar_tasks(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The replacement for `layout_match` (D9): every landed task whose own `spec.json`
+    looks enough like this one to be worth offering as reuse, at gate 1 — never an
+    automatic branch. A landed task with no spec.json (predates this build, or was
+    landed by hand) simply never matches; that is not an error."""
+    from adaptrna_agentic.codegen.discovery import custom_task_names, landed_spec
+
+    candidates = []
+    for task_name in custom_task_names():
+        other = landed_spec(task_name)
+        if other is None:
+            continue
+
+        score, why = _similarity(spec, other)
+        if score is None:
+            continue
+
+        candidates.append({
+            "task": task_name, "score": score, "why": why,
+            "spec_path": f"adaptrna_custom/tasks/{task_name}/spec.json",
+        })
+
+    candidates.sort(key=lambda c: -c["score"])
+    return candidates
+
+
+def _similarity(spec: Dict[str, Any], other: Dict[str, Any]):
+    """`(score, why)`; `(None, "")` if this candidate is not worth reporting at all.
+
+    Columns equal (+2), target type equal (+2), class count equal (+1), median length
+    within 20% (+1) — but the floor is columns AND target type both matching (plan §9);
+    class-count/length agreement alone never clears it."""
+    columns_match = (
+        spec.get("sequence_column") == other.get("sequence_column")
+        and spec.get("label_column") == other.get("label_column")
+    )
+    target_type_match = spec.get("target_type") == other.get("target_type")
+    if not (columns_match and target_type_match):
+        return None, ""
+
+    score = 4.0
+    reasons = [
+        f"same columns ('{spec.get('sequence_column')}', '{spec.get('label_column')}')",
+        f"same target type ({spec.get('target_type')})",
+    ]
+
+    spec_classes = spec.get("classes") or []
+    other_classes = other.get("classes") or []
+    if spec_classes and len(spec_classes) == len(other_classes):
+        score += 1.0
+
+    spec_median = (spec.get("length") or {}).get("median")
+    other_median = (other.get("length") or {}).get("median")
+    if spec_median and other_median and abs(spec_median - other_median) <= 0.2 * other_median:
+        score += 1.0
+        reasons.append(f"median length {spec_median} vs {other_median}")
+
+    return score, ", ".join(reasons)
 
 _UNSUPPORTED_INPUT = (
     "This build trains from a single table (.csv/.tsv, optionally gzipped) containing "
@@ -174,6 +235,7 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
         "head": _head_from_target_shape(target_type),
     }
     spec["warnings"] = _quality_warnings(frame, sequence_column, sequences, class_counts, split)
+    spec["similar_tasks"] = _similar_tasks(spec)
 
     return spec
 
