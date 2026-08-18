@@ -23,15 +23,15 @@ def test_list_shows_both_tool_kinds(client):
     tools = client.get("/api/tools").json()
 
     by_name = {t["name"]: t for t in tools}
-    assert by_name["splice_site"]["type"] == "adapter"
+    assert by_name["demo_binary"]["type"] == "adapter"
     assert by_name["dummy_add"]["type"] == "external"
     assert all(t["state"] == "active" for t in tools)
 
 
 def test_info_returns_the_manifest_entry(client):
-    entry = client.get("/api/tools/splice_site").json()
+    entry = client.get("/api/tools/demo_binary").json()
 
-    assert entry["task"] == "splice_site"
+    assert entry["task"] == "demo_binary"
     assert entry["provenance"]["source"]
 
 
@@ -43,17 +43,17 @@ def test_unknown_tool_is_404_listing_the_known_ones(client):
 
 
 def test_predict_runs_on_the_nano_backbone(client):
-    body = client.post("/api/tools/splice_site/predict", json={"sequences": [SEQ]}).json()
+    body = client.post("/api/tools/demo_binary/predict", json={"sequences": [SEQ]}).json()
 
-    assert body["tool"] == "splice_site"
+    assert body["tool"] == "demo_binary"
     assert len(body["predictions"]) == 1
     assert 0.0 <= body["predictions"][0] <= 1.0
 
 
 def test_disabled_tool_is_409_with_the_activate_hint(client):
-    client.post("/api/tools/splice_site/deactivate")
+    client.post("/api/tools/demo_binary/deactivate")
 
-    response = client.post("/api/tools/splice_site/predict", json={"sequences": [SEQ]})
+    response = client.post("/api/tools/demo_binary/predict", json={"sequences": [SEQ]})
 
     assert response.status_code == 409
     assert "disabled" in response.json()["error"]
@@ -61,9 +61,9 @@ def test_disabled_tool_is_409_with_the_activate_hint(client):
 
 
 def test_activate_round_trip(client):
-    assert client.post("/api/tools/splice_site/deactivate").json()["state"] == "disabled"
-    assert client.post("/api/tools/splice_site/activate").json()["state"] == "active"
-    assert client.post("/api/tools/splice_site/predict",
+    assert client.post("/api/tools/demo_binary/deactivate").json()["state"] == "disabled"
+    assert client.post("/api/tools/demo_binary/activate").json()["state"] == "active"
+    assert client.post("/api/tools/demo_binary/predict",
                        json={"sequences": [SEQ]}).status_code == 200
 
 
@@ -74,7 +74,7 @@ def test_external_call(client):
 
 
 def test_call_on_an_adapter_points_at_predict(client):
-    response = client.post("/api/tools/splice_site/call", json={"args": {}})
+    response = client.post("/api/tools/demo_binary/call", json={"args": {}})
 
     assert response.status_code == 409
     assert "/predict" in response.json()["error"]
@@ -97,10 +97,10 @@ def test_disabled_external_call_is_refused(client):
 
 
 def test_test_endpoint_dispatches_by_kind(client):
-    adapter = client.post("/api/tools/splice_site/test").json()
+    adapter = client.post("/api/tools/demo_binary/test").json()
     external = client.post("/api/tools/dummy_add/test").json()
 
-    assert adapter["ok"] is True and adapter["task"] == "splice_site"
+    assert adapter["ok"] is True and adapter["task"] == "demo_binary"
     assert external["ok"] is True
 
 
@@ -115,4 +115,4 @@ def test_health_and_doctor(client):
 
 def test_predict_validation_error_is_422(client):
     """A missing required field is FastAPI's own validation, not ours."""
-    assert client.post("/api/tools/splice_site/predict", json={}).status_code == 422
+    assert client.post("/api/tools/demo_binary/predict", json={}).status_code == 422

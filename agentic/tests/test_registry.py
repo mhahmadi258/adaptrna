@@ -21,9 +21,9 @@ def _land_spec(monkeypatch, tmp_path, task, spec):
 def test_register_defaults(nano_registry, nano_splice_adapter):
     entry = nano_registry.register(nano_splice_adapter)
 
-    assert entry.name == "splice_site"          # defaults to the adapter's task
+    assert entry.name == "demo_binary"          # defaults to the adapter's task
     assert entry.state == "active"
-    assert entry.task == "splice_site"
+    assert entry.task == "demo_binary"
     assert entry.lm_config == "nano"
     assert entry.provenance["source"] == str(nano_splice_adapter)
     assert entry.provenance["adapter_metadata"]["arm"] == "lora"
@@ -36,10 +36,10 @@ def test_register_defaults(nano_registry, nano_splice_adapter):
 
 
 def test_register_with_name_override(nano_registry, nano_splice_adapter):
-    entry = nano_registry.register(nano_splice_adapter, name="splice_site_donor")
+    entry = nano_registry.register(nano_splice_adapter, name="demo_binary_donor")
 
-    assert entry.name == "splice_site_donor"
-    assert entry.artifact_path().name == "splice_site_donor.pt"
+    assert entry.name == "demo_binary_donor"
+    assert entry.artifact_path().name == "demo_binary_donor.pt"
 
 
 def test_duplicate_name_rejected(nano_registry, nano_splice_adapter):
@@ -69,30 +69,30 @@ def test_full_ft_export_rejected(nano_registry, full_ft_export):
 
 
 def test_pad_sensitive_head_gets_a_serving_default_from_its_landed_spec(
-    nano_registry, nano_mrl_adapter, tmp_path, monkeypatch
+    nano_registry, nano_regression_adapter, tmp_path, monkeypatch
 ):
     """Phase 13: pad-sensitivity is read from the task's own spec.json (head.pad_sensitive
     — true for a regression recipe's pooled head), not a hardcoded task-name set."""
-    _land_spec(monkeypatch, tmp_path, "mrl", {
+    _land_spec(monkeypatch, tmp_path, "demo_regression", {
         "head": {"pad_sensitive": True, "primary_metric": "test/r2"},
     })
 
-    entry = nano_registry.register(nano_mrl_adapter)
+    entry = nano_registry.register(nano_regression_adapter)
 
     assert entry.serving["batch_size"] == 1
     assert "pad-sensitive" in entry.description
     assert entry.provenance["spec"]["head"]["pad_sensitive"] is True
 
     # An explicit batch size wins over the caveat default.
-    entry2 = nano_registry.register(nano_mrl_adapter, name="mrl_batched", batch_size=4)
+    entry2 = nano_registry.register(nano_regression_adapter, name="demo_regression_batched", batch_size=4)
     assert entry2.serving["batch_size"] == 4
 
 
-def test_a_tool_with_no_landed_spec_is_not_pad_sensitive(nano_registry, nano_mrl_adapter):
+def test_a_tool_with_no_landed_spec_is_not_pad_sensitive(nano_registry, nano_regression_adapter):
     """Absence is reported, not guessed: a hand-built adapter for a task with no
     spec.json (registered from the CLI, or landed before this build) keeps today's
     behaviour exactly — no note, no forced batch size, no provenance["spec"]."""
-    entry = nano_registry.register(nano_mrl_adapter)
+    entry = nano_registry.register(nano_regression_adapter)
 
     assert entry.serving["batch_size"] is None
     assert "pad-sensitive" not in entry.description
@@ -103,10 +103,10 @@ def test_registering_copies_the_landed_spec_into_provenance(
     nano_registry, nano_splice_adapter, tmp_path, monkeypatch
 ):
     spec = {
-        "task_name": "splice_site", "target_type": "binary",
+        "task_name": "demo_binary", "target_type": "binary",
         "head": {"pad_sensitive": False, "primary_metric": "test/f1_score"},
     }
-    _land_spec(monkeypatch, tmp_path, "splice_site", spec)
+    _land_spec(monkeypatch, tmp_path, "demo_binary", spec)
 
     entry = nano_registry.register(nano_splice_adapter)
 
@@ -115,20 +115,20 @@ def test_registering_copies_the_landed_spec_into_provenance(
 
 def test_state_changes_persist(nano_registry, nano_splice_adapter):
     nano_registry.register(nano_splice_adapter)
-    nano_registry.deactivate("splice_site")
+    nano_registry.deactivate("demo_binary")
 
     reloaded = Registry(data_dir=nano_registry.data_dir)
-    assert reloaded.get("splice_site").state == "disabled"
+    assert reloaded.get("demo_binary").state == "disabled"
 
-    reloaded.activate("splice_site")
-    assert Registry(data_dir=nano_registry.data_dir).get("splice_site").active
+    reloaded.activate("demo_binary")
+    assert Registry(data_dir=nano_registry.data_dir).get("demo_binary").active
 
 
 def test_remove_deletes_owned_copy(nano_registry, nano_splice_adapter):
     entry = nano_registry.register(nano_splice_adapter)
     copy = entry.artifact_path()
 
-    nano_registry.remove("splice_site")
+    nano_registry.remove("demo_binary")
 
     assert not copy.exists()
     assert nano_splice_adapter.exists()          # the source is never touched
@@ -138,7 +138,7 @@ def test_remove_deletes_owned_copy(nano_registry, nano_splice_adapter):
 def test_remove_keeps_linked_source(nano_registry, nano_splice_adapter):
     nano_registry.register(nano_splice_adapter, link=True)
 
-    nano_registry.remove("splice_site")
+    nano_registry.remove("demo_binary")
 
     assert nano_splice_adapter.exists()
 
@@ -146,7 +146,7 @@ def test_remove_keeps_linked_source(nano_registry, nano_splice_adapter):
 def test_unknown_name_lists_known_tools(nano_registry, nano_splice_adapter):
     nano_registry.register(nano_splice_adapter)
 
-    with pytest.raises(KeyError, match="splice_site"):
+    with pytest.raises(KeyError, match="demo_binary"):
         nano_registry.get("banana")
 
 

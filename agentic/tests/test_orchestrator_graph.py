@@ -55,7 +55,7 @@ def test_list_tools_turn(stack):
 
     tool_messages = _tool_messages(state)
     assert len(tool_messages) == 1
-    assert "splice_site" in tool_messages[0].content
+    assert "demo_binary" in tool_messages[0].content
     assert "dummy_add" in tool_messages[0].content
 
     assert state["messages"][-1].content == "You have 3 tools."
@@ -64,7 +64,7 @@ def test_list_tools_turn(stack):
 
 def test_fm_tool_turn_runs_a_real_nano_prediction(stack):
     model, graph = _graph(stack, [
-        AIMessage(content="", tool_calls=[tool_call("splice_site", {"sequences": SEQS})]),
+        AIMessage(content="", tool_calls=[tool_call("demo_binary", {"sequences": SEQS})]),
         AIMessage(content="Here are the probabilities."),
     ])
 

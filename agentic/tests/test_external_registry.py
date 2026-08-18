@@ -73,7 +73,7 @@ def test_adapters_and_externals_coexist(nano_registry, nano_splice_adapter):
     nano_registry.register_external(DUMMY)
 
     names = [e.name for e in nano_registry.list()]
-    assert names == ["dummy_add", "dummy_echo", "splice_site"]
+    assert names == ["demo_binary", "dummy_add", "dummy_echo"]
 
 
 def test_phase2_manifest_without_external_keys_still_loads(tmp_path):
@@ -82,10 +82,10 @@ def test_phase2_manifest_without_external_keys_still_loads(tmp_path):
         "format_version": 1,
         "backbone": {"lm_config": "nano", "weights": None, "device": "cpu", "dtype": "auto"},
         "tools": {
-            "splice_site": {
+            "demo_binary": {
                 "type": "adapter", "state": "active", "description": "d",
-                "task": "splice_site", "lm_config": "nano",
-                "artifact": "toolhub_data/adapters/splice_site.pt",
+                "task": "demo_binary", "lm_config": "nano",
+                "artifact": "toolhub_data/adapters/demo_binary.pt",
                 "serving": {"batch_size": None},
                 "test": {"sequences": ["ACGU"], "expected": None},
                 "provenance": {},
@@ -96,6 +96,6 @@ def test_phase2_manifest_without_external_keys_still_loads(tmp_path):
 
     manifest = Manifest.load(tmp_path)
 
-    entry = manifest.tools["splice_site"]
+    entry = manifest.tools["demo_binary"]
     assert entry.external is None
-    assert entry.task == "splice_site"
+    assert entry.task == "demo_binary"

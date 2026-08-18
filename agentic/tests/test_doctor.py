@@ -40,14 +40,14 @@ def test_healthy_install_reports_ok(healthy):
 
 
 def test_missing_artifact_is_a_failure(healthy):
-    healthy.get("splice_site").artifact_path().unlink()
+    healthy.get("demo_binary").artifact_path().unlink()
 
     report = run_checks(healthy.data_dir)
 
     assert report["status"] == FAIL
-    check = _check(report, "artifact:splice_site")
+    check = _check(report, "artifact:demo_binary")
     assert check["status"] == FAIL
-    assert "toolhub remove splice_site" in check["remedy"]
+    assert "toolhub remove demo_binary" in check["remedy"]
 
 
 def test_orphan_artifact_is_a_warning(healthy):
@@ -90,7 +90,7 @@ def test_stale_running_job_is_a_failure(healthy, tmp_path):
 
     store = JobStore(tmp_path / "jobs_data")
     store.add(JobRecord(
-        id="ghost", task="splice_site", arm="lora", command=["x"],
+        id="ghost", task="demo_binary", arm="lora", command=["x"],
         output_dir=str(tmp_path / "outputs" / "ghost"),
         state="running", pid=999999, pid_starttime="1", started_at="2026-01-01T00:00:00+00:00",
     ))
@@ -212,7 +212,7 @@ def test_doctor_changes_nothing(healthy):
 
 
 def test_report_formats_with_remedies(healthy):
-    healthy.get("splice_site").artifact_path().unlink()
+    healthy.get("demo_binary").artifact_path().unlink()
 
     text = doctor.format_report(run_checks(healthy.data_dir))
 

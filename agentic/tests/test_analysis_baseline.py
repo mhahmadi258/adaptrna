@@ -87,10 +87,10 @@ def test_a_difference_inside_tolerance_is_not_a_regression(jobs, tmp_path, monke
     No real DatasetSpec-driven task carries a reference band any more (Phase 13) -- the
     band is mocked here so the comparison logic itself stays proven correct."""
     _mock_band(monkeypatch, [95.8, 97.5], tolerance=1.0)
-    _record(jobs, "older", _run_dir(tmp_path, "older", "96.5"), task="splice_site")
+    _record(jobs, "older", _run_dir(tmp_path, "older", "96.5"), task="demo_binary")
     directory = _run_dir(tmp_path, "newer", "95.8")
 
-    report = analyze_run(directory, task="splice_site", arm="lora",
+    report = analyze_run(directory, task="demo_binary", arm="lora",
                         plan={"primary_metric": "test/f1_score"})
 
     assert report["verdict"] == "ok"      # the knowledge band covers both anyway
@@ -110,10 +110,10 @@ def test_truncated_runs_are_not_used_as_baselines(jobs, tmp_path):
 
 def test_a_knowledge_base_band_still_wins_over_history(jobs, tmp_path, monkeypatch):
     _mock_band(monkeypatch, [95.8, 97.5], tolerance=1.0)
-    _record(jobs, "older", _run_dir(tmp_path, "older", "99.0"), task="splice_site")
+    _record(jobs, "older", _run_dir(tmp_path, "older", "99.0"), task="demo_binary")
     directory = _run_dir(tmp_path, "newer", "96.5")
 
-    report = analyze_run(directory, task="splice_site", arm="lora",
+    report = analyze_run(directory, task="demo_binary", arm="lora",
                         plan={"primary_metric": "test/f1_score"})
 
     assert "baseline" not in report

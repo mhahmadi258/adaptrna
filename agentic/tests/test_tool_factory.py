@@ -26,11 +26,11 @@ def test_all_expected_tools_built(loaded):
     names = set(_by_name(*loaded))
 
     assert set(MANAGEMENT_TOOL_NAMES) <= names
-    assert {"splice_site", "dummy_echo", "dummy_add"} <= names
+    assert {"demo_binary", "dummy_echo", "dummy_add"} <= names
 
 
 def test_adapter_schema_takes_sequences(loaded):
-    tool = _by_name(*loaded)["splice_site"]
+    tool = _by_name(*loaded)["demo_binary"]
 
     assert set(tool.args) == {"sequences"}
 
@@ -45,7 +45,7 @@ def test_adapter_description_carries_its_own_spec_predict_output(
     from adaptrna_agentic.codegen import discovery
 
     monkeypatch.setattr(discovery, "CUSTOM_ROOT", tmp_path / "adaptrna_custom")
-    task_dir = tmp_path / "adaptrna_custom" / "tasks" / "splice_site"
+    task_dir = tmp_path / "adaptrna_custom" / "tasks" / "demo_binary"
     task_dir.mkdir(parents=True)
     (task_dir / "spec.json").write_text(json.dumps({
         "head": {"predict_output": "one probability per sequence", "pad_sensitive": False},
@@ -54,7 +54,7 @@ def test_adapter_description_carries_its_own_spec_predict_output(
     nano_registry.register(nano_splice_adapter)
     runtime = AdapterRuntime(nano_registry)
 
-    tool = _by_name(nano_registry, runtime)["splice_site"]
+    tool = _by_name(nano_registry, runtime)["demo_binary"]
 
     assert "one probability per sequence" in tool.description
 
@@ -64,9 +64,9 @@ def test_adapter_with_no_landed_spec_gets_no_output_note(loaded):
     today's plain description."""
     registry, runtime = loaded
 
-    tool = _by_name(registry, runtime)["splice_site"]
+    tool = _by_name(registry, runtime)["demo_binary"]
 
-    assert tool.description == registry.get("splice_site").description
+    assert tool.description == registry.get("demo_binary").description
 
 
 def test_external_schema_mirrors_wrapper_signature(loaded):
@@ -145,7 +145,7 @@ def test_list_tools_and_test_tool_dispatch(loaded):
     tools = _by_name(*loaded)
 
     entries = tools["list_tools"].invoke({})
-    assert {"splice_site", "dummy_echo"} <= {e["name"] for e in entries}
+    assert {"demo_binary", "dummy_echo"} <= {e["name"] for e in entries}
 
     report = tools["test_tool"].invoke({"name": "dummy_echo"})
     assert report["ok"] is True
@@ -165,7 +165,7 @@ def test_collision_with_management_name_refused(loaded):
 def test_adapter_tool_executes_on_nano(loaded):
     tools = _by_name(*loaded)
 
-    outputs = tools["splice_site"].invoke({"sequences": [SEQ]})
+    outputs = tools["demo_binary"].invoke({"sequences": [SEQ]})
 
     assert len(outputs) == 1
     assert 0.0 <= outputs[0] <= 1.0

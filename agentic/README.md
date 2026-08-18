@@ -51,12 +51,12 @@ configuration, trains it on the local GPU, analyses the result, and registers it
 tool — pausing for your approval before it burns GPU hours or adds a servable tool:
 
 ```
-you> My Spliceator data is at ~/data/train_data — what's in it?
-you> Recommend a fine-tuning setup for the acceptor arm.
+you> My data is at ~/data/train_data — what's in it?
+you> Recommend a fine-tuning setup for it.
 you> Run it.                     ← approval gate: shows the exact command, waits for [y/N]
 you> How's it going?             ← the job runs detached; the chat stays responsive
 you> Analyze the run.
-you> Register it as splice_site_acceptor.        ← approval gate
+you> Register it as my_tool.      ← approval gate
 ```
 
 The recommendation is **deterministic**: every hyperparameter comes from
@@ -82,7 +82,7 @@ engine change — verifies it, and stages it for your review:
 ```
 you> I have labelled sequences in dod_data/. Can anything train on this?
 #    → profile: no shipped task reads this layout
-you> Then build me a task for it, called splice_simple.
+you> Then build me a task for it, called my_task.
 #    → ToolSmith writes task.py / datamodule.py / config.yaml
 #    → harness runs it for real: import, config, datamodule on YOUR data,
 #      forward+backward, metrics, adapter round trip, serving through the hub
@@ -127,19 +127,19 @@ promotion inside the engine's TokenDropout — see MASTER_PLAN §7.
 ## External tools (Phase 3)
 
 Classical packages wrapped as typed functions, sharing the same manifest and lifecycle.
-The wrapper contract lives in `toolhub/external/contract.py`; `toolhub/external/vienna.py`
-(ViennaRNA) is the hand-written reference — and the template Phase 6's ToolSmith imitates.
+The wrapper contract lives in `toolhub/external/contract.py`: a module-level `SPEC`, plain
+typed functions, and input validation that runs before the wrapped package is imported —
+the same contract Phase 6's ToolSmith imitates when it writes a new wrapper.
 
 ```bash
 # install is approval-gated: the exact pip command is shown; confirm or pass --yes
-python -m adaptrna_agentic.cli.toolhub register-external adaptrna_agentic.toolhub.external.vienna
-python -m adaptrna_agentic.cli.toolhub call vienna_fold sequence=GGGGAAAACCCC
-python -m adaptrna_agentic.cli.toolhub test vienna_fold      # golden-pair tests
+python -m adaptrna_agentic.cli.toolhub register-external adaptrna_custom.tools.<your_tool>
+python -m adaptrna_agentic.cli.toolhub call <your_tool>_<function> arg=value
+python -m adaptrna_agentic.cli.toolhub test <your_tool>_<function>      # golden-pair tests
 ```
 
-Wrapped packages (e.g. `ViennaRNA`) are *tool* dependencies: installed into the venv via
-the gated flow, recorded in the manifest provenance, and deliberately absent from any
-`pyproject.toml`.
+Wrapped packages are *tool* dependencies: installed into the venv via the gated flow,
+recorded in the manifest provenance, and deliberately absent from any `pyproject.toml`.
 
 ## HTTP service (Phase 8)
 

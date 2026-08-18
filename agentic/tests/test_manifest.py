@@ -13,10 +13,10 @@ from adaptrna_agentic.toolhub.manifest import (
 )
 
 
-def _entry(name="splice_site"):
+def _entry(name="demo_binary"):
     return ToolEntry(
         name=name, type="adapter", state="active", description="d",
-        task="splice_site", lm_config="nano", artifact=f"toolhub_data/adapters/{name}.pt",
+        task="demo_binary", lm_config="nano", artifact=f"toolhub_data/adapters/{name}.pt",
     )
 
 
@@ -31,19 +31,19 @@ def test_fresh_load_is_empty_with_defaults(tmp_path):
 def test_round_trip(tmp_path):
     manifest = Manifest.load(tmp_path)
     manifest.backbone = BackboneConfig(lm_config="nano", weights=None, device="cpu")
-    manifest.tools["splice_site"] = _entry()
+    manifest.tools["demo_binary"] = _entry()
     manifest.save()
 
     loaded = Manifest.load(tmp_path)
 
     assert loaded.backbone == manifest.backbone
-    assert loaded.tools.keys() == {"splice_site"}
-    assert loaded.tools["splice_site"] == manifest.tools["splice_site"]
+    assert loaded.tools.keys() == {"demo_binary"}
+    assert loaded.tools["demo_binary"] == manifest.tools["demo_binary"]
 
 
 def test_save_is_atomic_and_leaves_no_temp_files(tmp_path):
     manifest = Manifest.load(tmp_path)
-    manifest.tools["splice_site"] = _entry()
+    manifest.tools["demo_binary"] = _entry()
     manifest.save()
     manifest.save()  # overwrite path too
 

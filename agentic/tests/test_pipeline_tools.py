@@ -101,12 +101,12 @@ def _finished_job(tmp_path, built, adapter_source):
         "m=out/'metrics'/'version_0'; m.mkdir(parents=True, exist_ok=True)\n"
         "(m/'metrics.csv').write_text('epoch,step,train/loss,test/f1_score\\n"
         "0,50,0.4,\\n1,100,,96.5\\n')\n"
-        "shutil.copy(sys.argv[2], out/'splice_site_adapter.pt')\n"
+        "shutil.copy(sys.argv[2], out/'demo_binary_adapter.pt')\n"
         "(out/'exit_code').write_text('0')\n"
     )
     plan = {
         "source": PLAN_SOURCE,
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir), str(adapter_source)],
         "overrides": {}, "estimated_wall_clock": "~7 min", "warnings": [],
         "primary_metric": "test/f1_score",
@@ -137,13 +137,13 @@ def test_start_status_analyze_register_flow(tools, tmp_path, nano_splice_adapter
     assert report["primary_value"] == pytest.approx(96.5)
 
     entry = built["register_trained_adapter"].invoke(
-        {"job_id": job_id, "name": "splice_site_acceptor",
+        {"job_id": job_id, "name": "demo_binary_acceptor",
          "description": "Acceptor splice sites"}
     )
-    assert entry["name"] == "splice_site_acceptor"
+    assert entry["name"] == "demo_binary_acceptor"
     assert entry["provenance"]["job_id"] == job_id
     assert entry["provenance"]["training_metrics"]["test/f1_score"] == pytest.approx(96.5)
-    assert registry.get("splice_site_acceptor").active
+    assert registry.get("demo_binary_acceptor").active
 
 
 def test_list_jobs_reports_the_run(tools, tmp_path, nano_splice_adapter):
@@ -164,7 +164,7 @@ def test_registering_an_unfinished_job_is_refused(tools, tmp_path):
     output_dir = tmp_path / "outputs" / "slow_run"
     built["start_training"].invoke({"plan": {
         "source": PLAN_SOURCE,
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir)],
         "overrides": {}, "warnings": [],
     }})
@@ -183,7 +183,7 @@ def test_start_training_refuses_a_hand_assembled_plan(tools):
     prompt: a plan that did not come from the recommender is refused."""
     built, _registry = tools
     forged = {
-        "task": "splice_site", "arm": "lora", "output_dir": "outputs/forged",
+        "task": "demo_binary", "arm": "lora", "output_dir": "outputs/forged",
         "command": ["echo", "hi"], "overrides": {"optim.lr": 1e-3},
     }
 

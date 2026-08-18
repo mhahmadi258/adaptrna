@@ -1,7 +1,7 @@
 name: failure_paths
 description: |
   Every failure returns something the model can act on, and none of them kill the turn.
-tools: [splice_site, dummy]
+tools: [demo_binary, dummy]
 turns:
   - user: Use a tool that does not exist.
     script:
@@ -19,7 +19,7 @@ turns:
     script:
       - tool_calls:
           - name: start_training
-            args: {plan: {task: splice_site, arm: lora, command: [echo], overrides: {optim.lr: 0.001}}}
+            args: {plan: {task: demo_binary, arm: lora, command: [echo], overrides: {optim.lr: 0.001}}}
       - text: I cannot invent hyperparameters.
     expect_interrupt: true
     resume: {approved: true}

@@ -7,6 +7,7 @@ picked from a knowledge base of examples that no longer exists.
 """
 
 from adaptrna_agentic.codegen import prompts
+from forbidden_strings import FORBIDDEN as _FORBIDDEN
 
 SPEC = {
     "target_type": "binary",
@@ -30,12 +31,6 @@ COLUMN_SPEC = {
     "task_name": "grouped_task",
     "split": {"mode": "column", "column": "source", "mapping": {"train": ["human"], "test": ["fly"]}},
 }
-
-#: Forbidden per D1/D11 — none of these strings may appear in a fallback prompt, whose
-#: only knowledge of "what to build" comes from the approved spec and the target-type
-#: recipe, never a shipped task's identity.
-_FORBIDDEN = ("splice_site", "mrl", "sec_struct", "ncrna_classification", "Spliceator", "bpRNA")
-
 
 def test_task_prompt_carries_everything_the_generator_needs():
     text = prompts.task_user_prompt(SPEC)
@@ -178,8 +173,8 @@ def test_no_prompt_function_names_a_shipped_task():
         assert forbidden not in text
 
 
-def test_external_tool_prompt_carries_the_contract_and_reference():
-    text = prompts.external_tool_prompt("ViennaRNA", "fold RNA")
+def test_external_tool_prompt_carries_the_contract():
+    text = prompts.external_tool_prompt("some-package", "checksum some text")
 
     assert "ExternalToolSpec" in text
     assert "SPEC" in text

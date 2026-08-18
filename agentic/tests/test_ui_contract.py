@@ -28,12 +28,12 @@ from scripted_model import tool_call
 
 SESSION = "contract"
 
-COMMAND = ["/bin/echo", "trained", "--task", "splice_site"]
+COMMAND = ["/bin/echo", "trained", "--task", "demo_binary"]
 
 
 def _plan(tmp_path):
     return {
-        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora",
+        "source": PLAN_SOURCE, "task": "demo_binary", "arm": "lora",
         "output_dir": str(tmp_path / "outputs" / "contract_run"),
         "command": COMMAND, "overrides": {},
         "estimated_wall_clock": "~7 min", "warnings": [],
@@ -273,9 +273,9 @@ def test_the_approval_modal_fields_for_a_tool_toggle(client):
     `.after_approval` for a gated activation, field for field with the terminal."""
     from adaptrna_agentic.agents.orchestrator import _details, _summarize
 
-    call = {"name": "activate_tool", "args": {"name": "vienna_fold"}, "id": "c1"}
+    call = {"name": "activate_tool", "args": {"name": "checksum_tool"}, "id": "c1"}
 
-    assert _summarize(call) == "Enable the tool 'vienna_fold' (currently unknown)"
+    assert _summarize(call) == "Enable the tool 'checksum_tool' (currently unknown)"
     assert set(_details(call)) == {"tool", "current_state", "after_approval"}
 
 
@@ -365,7 +365,7 @@ def _finished_job(tmp_path) -> str:
     output_dir = tmp_path / "outputs" / "ui_job"
     runner = JobRunner()
     runner.start({
-        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora",
+        "source": PLAN_SOURCE, "task": "demo_binary", "arm": "lora",
         "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir)],
         "overrides": {}, "primary_metric": "test/f1_score",

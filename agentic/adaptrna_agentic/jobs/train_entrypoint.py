@@ -5,7 +5,7 @@ to the engine's own training CLI unchanged. The JobRunner always launches throug
 Phase 6's generated task modules become runnable by adding them to `CUSTOM_TASK_MODULES`
 — with no change to the runner, the plan format, or the engine.
 
-    python -m adaptrna_agentic.jobs.train_entrypoint --task splice_site --use_lora ...
+    python -m adaptrna_agentic.jobs.train_entrypoint --task <your_task> --use_lora ...
 
 Also writes `<output_dir>/exit_code` on completion, so job state survives a lost PID.
 """

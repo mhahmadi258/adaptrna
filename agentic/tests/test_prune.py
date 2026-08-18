@@ -64,9 +64,9 @@ def test_referenced_artifacts_are_never_removed(hub):
     report = prune("artifacts", apply=True, data_dir=hub.data_dir)
 
     assert _labels(report, "removed") == {"orphan.pt"}
-    assert "splice_site.pt" in _kept_reasons(report)
-    assert "referenced by tool 'splice_site'" in _kept_reasons(report)["splice_site.pt"]
-    assert hub.get("splice_site").artifact_path().exists()
+    assert "demo_binary.pt" in _kept_reasons(report)
+    assert "referenced by tool 'demo_binary'" in _kept_reasons(report)["demo_binary.pt"]
+    assert hub.get("demo_binary").artifact_path().exists()
 
 
 def test_runs_that_produced_a_registered_tool_are_kept(hub, tmp_path, monkeypatch):
@@ -78,8 +78,8 @@ def test_runs_that_produced_a_registered_tool_are_kept(hub, tmp_path, monkeypatc
     (outputs / "old_run").mkdir(parents=True)
     (outputs / "old_run" / "train.log").write_text("x" * 1000)
 
-    entry = hub.get("splice_site")
-    entry.provenance["source"] = str(outputs / "kept_run" / "splice_site_adapter.pt")
+    entry = hub.get("demo_binary")
+    entry.provenance["source"] = str(outputs / "kept_run" / "demo_binary_adapter.pt")
     hub.manifest.save()
 
     monkeypatch.setattr("adaptrna_agentic.toolhub.prune.REPO_ROOT", tmp_path)

@@ -25,7 +25,7 @@ def client(nano_registry, tmp_path, monkeypatch):
     monkeypatch.setattr("adaptrna_agentic.jobs.store.REPO_ROOT", tmp_path)
 
     plan = {
-        "source": PLAN_SOURCE, "task": "splice_site", "arm": "lora",
+        "source": PLAN_SOURCE, "task": "demo_binary", "arm": "lora",
         "output_dir": str(tmp_path / "outputs" / "gated_run"),
         "command": ["/bin/echo", "trained"], "overrides": {},
         "estimated_wall_clock": "~7 min", "warnings": [],
@@ -60,7 +60,7 @@ def test_the_request_carries_what_the_human_needs_to_decide(client):
     request = events[-1]["data"]["requests"][0]
 
     assert request["tool"] == "start_training"
-    assert "splice_site" in request["summary"]
+    assert "demo_binary" in request["summary"]
     assert request["details"]["command"] == ["/bin/echo", "trained"]   # the exact command
 
 

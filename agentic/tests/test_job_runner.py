@@ -27,7 +27,7 @@ FAKE_TRAIN = textwrap.dedent("""
     )
     time.sleep(delay)
     if code == 0:
-        (out / "splice_site_adapter.pt").write_bytes(b"fake-adapter")
+        (out / "demo_binary_adapter.pt").write_bytes(b"fake-adapter")
     (out / "exit_code").write_text(str(code))
     sys.exit(code)
 """)
@@ -46,7 +46,7 @@ def plan(tmp_path, name="run_a", code=0, delay=0.0):
     output_dir = tmp_path / "outputs" / name
 
     return {
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir), str(code), str(delay)],
     }
 
@@ -71,7 +71,7 @@ def test_successful_job_lifecycle(runner, tmp_path):
 
     assert status["exit_code"] == 0
     assert status["ended_at"]
-    assert status["adapter_path"].endswith("splice_site_adapter.pt")
+    assert status["adapter_path"].endswith("demo_binary_adapter.pt")
 
 
 def test_failed_job_is_recorded(runner, tmp_path):
@@ -103,7 +103,7 @@ def test_logs_are_captured(runner, tmp_path):
                       "(out/'exit_code').write_text('0')\n")
     output_dir = tmp_path / "outputs" / "noisy"
     record = runner.start({
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script), str(output_dir)],
     })
 
@@ -159,7 +159,7 @@ def test_dead_process_without_exit_code_is_failed(runner, tmp_path):
     script.write_text("import os\nos._exit(9)\n")
     output_dir = tmp_path / "outputs" / "crashed"
     record = runner.start({
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script)],
     })
 
@@ -173,7 +173,7 @@ def test_crashed_job_detected_without_a_process_handle(runner, tmp_path):
     script.write_text("import os\nos._exit(9)\n")
     output_dir = tmp_path / "outputs" / "crashed2"
     record = runner.start({
-        "task": "splice_site", "arm": "lora", "output_dir": str(output_dir),
+        "task": "demo_binary", "arm": "lora", "output_dir": str(output_dir),
         "command": [sys.executable, str(script)],
     })
 

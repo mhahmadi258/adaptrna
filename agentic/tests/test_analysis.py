@@ -136,7 +136,7 @@ def test_collapsed_lora_run_is_suspicious_with_the_collapse_remedy(tmp_path):
 
 
 def test_missing_metrics_file_fails_with_a_log_hint(tmp_path):
-    report = analyze_run(tmp_path, task="splice_site")
+    report = analyze_run(tmp_path, task="demo_binary")
 
     assert report["verdict"] == VERDICT_FAILED
     assert any("no metrics.csv" in check for check in report["checks"])
@@ -205,9 +205,9 @@ def test_cost_columns_are_excluded_from_reported_metrics(tmp_path):
 
 
 def test_plan_supplies_task_and_arm(tmp_path):
-    plan = {"task": "splice_site", "arm": "lora", "overrides": {}}
+    plan = {"task": "demo_binary", "arm": "lora", "overrides": {}}
 
     report = analyze_run(splice_run(tmp_path, 96.0), plan=plan)
 
-    assert report["task"] == "splice_site"
+    assert report["task"] == "demo_binary"
     assert report["arm"] == "lora"

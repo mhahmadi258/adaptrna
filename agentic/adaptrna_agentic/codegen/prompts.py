@@ -284,11 +284,10 @@ def external_tool_prompt(package: str, description: str, feedback: Optional[str]
     sections = [
         f"# Wrapper to build\n\nPython package: `{package}`\nWhat it should expose: {description}",
         f"# The contract you must satisfy\n\n```python\n{_read(CONTRACT_FILE)}\n```",
-        "# The hand-written reference implementation\n\n```python\n"
-        + _read(REPO_ROOT / "agentic" / "adaptrna_agentic" / "toolhub" / "external" / "vienna.py")
-        + "\n```",
         "Produce ONE module: a module-level `SPEC: ExternalToolSpec` plus one plain "
-        "function per FunctionSpec. Validate inputs BEFORE importing the wrapped package. "
+        "function per FunctionSpec. Validate inputs BEFORE importing the wrapped package, "
+        "so a bad argument raises at the call boundary instead of failing inside the "
+        "package (or, if it isn't installed, surfacing as an unrelated ImportError). "
         "Golden cases must be values you are confident about a priori — never invented "
         "numbers.",
     ]

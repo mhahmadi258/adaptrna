@@ -31,11 +31,17 @@ packages = [
     "adaptrna_agentic.api",
     "adaptrna_agentic.api.routers",
     "adaptrna_agentic.cli",
+    "adaptrna_agentic.codegen",
+    "adaptrna_agentic.codegen.templates",
     "adaptrna_agentic.jobs",
     "adaptrna_agentic.knowledge",
     "adaptrna_agentic.profiling",
     "adaptrna_agentic.toolhub",
+    "adaptrna_agentic.toolhub.external",
 ]
+
+[tool.setuptools.package-data]
+adaptrna_agentic = ["knowledge/*.yaml", "codegen/templates/*.j2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -33,7 +33,7 @@ def _plan(tmp_path, name, body):
     script = tmp_path / f"{name}.py"
     script.write_text(body)
     return {
-        "task": "splice_site", "arm": "lora",
+        "task": "demo_binary", "arm": "lora",
         "output_dir": str(tmp_path / "outputs" / name),
         "command": [sys.executable, str(script)],
         "overrides": {},
