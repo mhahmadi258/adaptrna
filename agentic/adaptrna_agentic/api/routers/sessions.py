@@ -160,6 +160,8 @@ def resume_session(
         decision["note"] = body.note
     elif not body.approved:
         decision["note"] = "the user declined"
+    if body.edits:
+        decision["edits"] = body.edits
 
     return StreamingResponse(
         stream_turn(services.graph, config, Command(resume=decision)),

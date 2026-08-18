@@ -104,8 +104,84 @@ def _pending_interrupt(graph, config):
     return None
 
 
+def _print_spec_block(spec: dict) -> None:
+    """`details["spec"]` (gate 1, Phase 13 §4), field by field."""
+    fmt = spec.get("format") or {}
+    rows = fmt.get("rows")
+    columns = len(spec.get("ignored_columns") or []) + 2
+    rows_str = f"{rows:,}" if isinstance(rows, int) else "?"
+    print(f"  │   file:      {spec.get('path', '?')}  ({rows_str} rows, {columns} columns)")
+
+    length = spec.get("length") or {}
+    print(
+        f"  │   sequence:  {spec.get('sequence_column', '?')}          "
+        f"{length.get('median', '?')} nt (min {length.get('min', '?')}, "
+        f"max {length.get('max', '?')}), {spec.get('alphabet', '?')}"
+    )
+
+    label_line = f"  │   label:     {spec.get('label_column', '?')}             {spec.get('target_type', '?')}"
+    if spec.get("class_counts"):
+        counts = " · ".join(f"{k}: {v:,}" for k, v in spec["class_counts"].items())
+        label_line += f" — {counts}"
+        if spec.get("positive_class"):
+            label_line += f" (positive: '{spec['positive_class']}')"
+    elif spec.get("target_summary"):
+        summary = spec["target_summary"]
+        label_line += (
+            f" — min {summary.get('min')}, max {summary.get('max')}, mean {summary.get('mean')}"
+        )
+    print(label_line)
+
+    if spec.get("ignored_columns"):
+        print(f"  │   ignored:   {', '.join(spec['ignored_columns'])}")
+
+    split = spec.get("split") or {}
+    counts = split.get("row_counts") or {}
+    counts_str = " / ".join(str(counts.get(k, "?")) for k in ("train", "val", "test"))
+    if split.get("mode") == "random":
+        fractions = split.get("fractions") or {}
+        pct = lambda k: int(round((fractions.get(k) or 0) * 100))  # noqa: E731
+        stratified = "stratified, " if split.get("stratify") else ""
+        print(
+            f"  │   split:     random {pct('train')}/{pct('val')}/{pct('test')}, "
+            f"seed {split.get('seed')}, {stratified}→ {counts_str}"
+        )
+    elif split.get("mode") == "column":
+        print(f"  │   split:     column '{split.get('column')}' → {counts_str}")
+
+    head = spec.get("head") or {}
+    print(
+        f"  │   head:      {head.get('kind', '?')} · {head.get('loss', '?')} · "
+        f"{head.get('primary_metric', '?')}"
+    )
+    print(f"  │   task:      {spec.get('task_name', '?')}")
+
+
+def _parse_edit_value(text: str):
+    """`field=value` values: numbers and JSON where they parse, plain text otherwise —
+    so `positive_class=1` stays the string '1' (a class label) while
+    `split.mapping={"train": ["human"]}` parses as the dict it needs to be."""
+    import json
+
+    for parser in (int, float):
+        try:
+            return parser(text)
+        except ValueError:
+            pass
+
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return text
+
+
 def _prompt_approval(request) -> dict:
-    """Show exactly what would happen, then ask. This is the human gate."""
+    """Show exactly what would happen, then ask. This is the human gate.
+
+    Accepts `field=value` lines before the final y/N — each stages an edit (dotted path
+    into the gate's own argument object) and re-prompts; typing 'y'/'yes' approves with
+    whatever edits were staged, anything else declines.
+    """
     print()
     print("  ┌─ approval required " + "─" * 46)
     for item in request.get("requests", []):
@@ -114,6 +190,8 @@ def _prompt_approval(request) -> dict:
         if details.get("tool"):
             print(f"  │   tool:      {details['tool']}")
             print(f"  │   state:     {details['current_state']} → {details['after_approval']}")
+        if details.get("spec"):
+            _print_spec_block(details["spec"])
         if details.get("command"):
             print(f"  │   would run: {' '.join(details['command'])}")
         if details.get("output_dir"):
@@ -129,16 +207,30 @@ def _prompt_approval(request) -> dict:
             print(f"  │   ! {warning}")
     print("  └" + "─" * 66)
 
-    try:
-        reply = input("  approve? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        reply = ""
+    edits: dict = {}
+    while True:
+        try:
+            reply = input("  edit a field, or approve? [field=value … | y/N] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return {"approved": False, "note": "the user declined at the approval prompt"}
 
-    if reply in ("y", "yes"):
-        return {"approved": True}
+        lowered = reply.lower()
+        if lowered in ("y", "yes"):
+            decision = {"approved": True}
+            if edits:
+                decision["edits"] = edits
+            return decision
 
-    return {"approved": False, "note": "the user declined at the approval prompt"}
+        if "=" in reply and lowered not in ("n", "no"):
+            field, _, value = reply.partition("=")
+            field = field.strip()
+            if field:
+                edits[field] = _parse_edit_value(value.strip())
+                print(f"  │   staged: {field} = {edits[field]!r}")
+                continue
+
+        return {"approved": False, "note": "the user declined at the approval prompt"}
 
 
 def run_turn(graph, config, user_text: str) -> str:

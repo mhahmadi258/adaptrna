@@ -100,14 +100,22 @@ export function sendMessage(session, text, onEvent) {
 /**
  * Answer a pending approval. The reply is a *new* stream continuing the same turn, which
  * is why callers consume it with the same handler they used for `sendMessage`.
+ *
+ * `edits` (Phase 13 §5) is a dotted-path -> value object collected from the approval
+ * modal's spec/plan form — absent or `{}` means "as proposed", same as no `edits` key at
+ * all in the request body.
  */
-export function resumeSession(session, approved, note, onEvent) {
+export function resumeSession(session, approved, note, edits, onEvent) {
+  const body = { approved };
+  if (note) body.note = note;
+  if (edits && Object.keys(edits).length) body.edits = edits;
+
   return streamEvents(
     `/api/sessions/${path(session)}/resume`,
     {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(note ? { approved, note } : { approved }),
+      body: JSON.stringify(body),
     },
     onEvent,
   );

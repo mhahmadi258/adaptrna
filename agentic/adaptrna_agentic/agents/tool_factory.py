@@ -63,6 +63,22 @@ GATED_TOOLS = (
     "deactivate_tool",
 )
 
+#: Dotted paths a human may edit at the gate, per gated tool (Phase 13 §5). A path not on
+#: a tool's list here is refused by `orchestrator._apply_edits` — an edit that cannot be
+#: validated must fail loudly, because it is a training/codegen configuration.
+#: `land_generated_code` is deliberately absent: editing generated code at the gate would
+#: mean landing code the harness never actually verified.
+EDITABLE_ARGS = {
+    "confirm_data_profile": (
+        "spec.sequence_column", "spec.label_column", "spec.target_type",
+        "spec.task_name", "spec.tool_description", "spec.positive_class",
+        "spec.on_invalid", "spec.split.*",
+    ),
+    "start_training": (
+        "plan.overrides.*", "plan.seed", "plan.arm", "plan.quick_run",
+    ),
+}
+
 #: Appended to adapter tool descriptions so the model knows the output type. A future
 #: sec_struct adapter returns L×L matrices — its wrapper should cap and summarize rather
 #: than dump matrices into context (see plan §7).

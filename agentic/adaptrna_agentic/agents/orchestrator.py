@@ -19,6 +19,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from adaptrna_agentic.agents.tool_factory import (
+    EDITABLE_ARGS,
     GATED_TOOLS,
     build_agent_tools,
     stringify_tool_output,
@@ -168,6 +169,101 @@ def _details(call: Dict[str, Any], registry: Optional[Registry] = None) -> Dict[
     return details
 
 
+def _path_covered(path: str, whitelist) -> bool:
+    for pattern in whitelist:
+        if pattern == path:
+            return True
+        if pattern.endswith(".*") and path.startswith(pattern[:-1]):
+            return True
+    return False
+
+
+def _get_path(obj: Any, path: str) -> Any:
+    node = obj
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _set_path(obj: Any, path: str, value: Any) -> None:
+    parts = path.split(".")
+    node = obj
+    for part in parts[:-1]:
+        if not isinstance(node.get(part), dict):
+            node[part] = {}
+        node = node[part]
+    node[parts[-1]] = value
+
+
+def _same_shape(old: Any, new: Any) -> bool:
+    """Numbers may cross int/float; anything else must keep its type."""
+    if old is None:
+        return True
+    if isinstance(old, (int, float)) and not isinstance(old, bool):
+        return isinstance(new, (int, float)) and not isinstance(new, bool)
+    return type(old) is type(new)
+
+
+def _apply_edits(args: Dict[str, Any], edits: Optional[Dict[str, Any]], tool_name: str) -> Dict[str, Any]:
+    """Apply human `field=value` edits from the approval gate onto a tool's arguments.
+
+    Whitelist-only (`EDITABLE_ARGS`) and type-checked — an edit naming a path the tool
+    does not declare editable, or changing a value's type, is refused rather than
+    silently ignored (plan §5). Every edit actually applied is recorded on the mutated
+    top-level object itself (`spec["human_edits"]` / `plan["human_overrides"]`) so no
+    later surface can present an edited value as if the system had recommended it.
+    """
+    if not edits:
+        return args
+
+    whitelist = EDITABLE_ARGS.get(tool_name)
+    if not whitelist:
+        raise ValueError(
+            f"'{tool_name}' has no editable fields; {sorted(edits)} cannot be applied."
+        )
+
+    import copy
+
+    args = copy.deepcopy(args)
+    changes: Dict[str, Dict[str, Any]] = {}
+
+    for path, new_value in edits.items():
+        if not _path_covered(path, whitelist):
+            raise ValueError(
+                f"'{path}' is not editable for '{tool_name}'. Editable fields: "
+                f"{', '.join(whitelist)}."
+            )
+
+        old_value = _get_path(args, path)
+        # A CLI/UI edit arrives untyped: 'positive_class=1' means the string class label
+        # '1', not the number 1, whenever the field it targets is itself a string (class
+        # labels, task names, columns are never numbers here even when the data's own
+        # labels look like integers). Coerce back to the field's own type rather than
+        # rejecting a perfectly sensible edit typed the natural way.
+        if isinstance(old_value, str) and isinstance(new_value, (int, float)) and not isinstance(new_value, bool):
+            new_value = str(new_value)
+
+        if not _same_shape(old_value, new_value):
+            raise ValueError(
+                f"'{path}' cannot change type from {type(old_value).__name__} to "
+                f"{type(new_value).__name__}."
+            )
+
+        _set_path(args, path, new_value)
+        changes[path] = {"recommended": old_value, "chosen": new_value}
+
+    if changes:
+        top_key = next(iter(whitelist)).split(".", 1)[0]
+        record_key = "human_overrides" if top_key == "plan" else "human_edits"
+        target = args.get(top_key)
+        if isinstance(target, dict):
+            target[record_key] = changes
+
+    return args
+
+
 def build_orchestrator_graph(
     model: Optional[BaseChatModel] = None,
     registry: Optional[Registry] = None,
@@ -252,10 +348,13 @@ def build_orchestrator_graph(
                 output = f"Unknown tool '{call['name']}'. Use list_tools to see what exists."
             else:
                 try:
-                    # handle_tool_error=True turns ToolExceptions (refusals, validation)
-                    # into result strings; anything else is caught here so one bad call
-                    # never kills the turn.
-                    output = tools[call["name"]].invoke(call["args"])
+                    # Edits are applied to a *copy* of the model's original args before
+                    # the tool ever sees them — the gated tool itself never has to know
+                    # this mechanism exists. handle_tool_error=True turns ToolExceptions
+                    # (refusals, validation) into result strings; anything else is caught
+                    # here so one bad call never kills the turn.
+                    args = _apply_edits(call["args"], (decision or {}).get("edits"), call["name"])
+                    output = tools[call["name"]].invoke(args)
                 except Exception as exc:  # noqa: BLE001
                     output = f"Tool '{call['name']}' failed: {exc}"
 

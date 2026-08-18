@@ -22,6 +22,12 @@ class MessageRequest(BaseModel):
 class ResumeRequest(BaseModel):
     approved: bool = Field(description="Whether the user approved the pending action")
     note: Optional[str] = Field(default=None, description="Why, if they declined")
+    edits: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Dotted-path -> value corrections to the gate's own arguments, "
+                     "e.g. {'spec.task_name': 'donor_sites'}. Absent or {} means "
+                     "'as proposed'.",
+    )
 
 
 class SessionRequest(BaseModel):

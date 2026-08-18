@@ -354,6 +354,108 @@ export function analysisReport(report) {
 // WeakMap so file data survives without polluting DOM attributes with large strings.
 const _editorFiles = new WeakMap();
 
+/** `details.spec` (gate 1, Phase 13 §4), field by field — same content and order as the
+ * terminal's `_print_spec_block` (`cli/chat.py`). */
+function specSummary(spec) {
+  const line = (label, value) =>
+    el("div", { class: "approval-line" },
+       el("span", { class: "approval-label", text: label }),
+       el("code", { class: "approval-value", text: value }));
+
+  const rows = [];
+  const fmt = spec.format || {};
+  rows.push(line("file", `${spec.path} (${fmt.rows ?? "?"} rows)`));
+
+  const length = spec.length || {};
+  rows.push(line(
+    "sequence",
+    `${spec.sequence_column} — ${length.median ?? "?"} nt `
+    + `(min ${length.min ?? "?"}, max ${length.max ?? "?"}), ${spec.alphabet}`,
+  ));
+
+  let labelValue = `${spec.label_column} — ${spec.target_type}`;
+  if (spec.class_counts) {
+    labelValue += " — " + Object.entries(spec.class_counts).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    if (spec.positive_class) labelValue += ` (positive: '${spec.positive_class}')`;
+  } else if (spec.target_summary) {
+    const s = spec.target_summary;
+    labelValue += ` — min ${s.min}, max ${s.max}, mean ${s.mean}`;
+  }
+  rows.push(line("label", labelValue));
+
+  if (spec.ignored_columns && spec.ignored_columns.length) {
+    rows.push(line("ignored", spec.ignored_columns.join(", ")));
+  }
+
+  const split = spec.split || {};
+  const counts = split.row_counts || {};
+  const countsStr = ["train", "val", "test"].map((k) => counts[k] ?? "?").join(" / ");
+  if (split.mode === "random") {
+    const fractions = split.fractions || {};
+    const pct = (k) => Math.round((fractions[k] || 0) * 100);
+    rows.push(line(
+      "split",
+      `random ${pct("train")}/${pct("val")}/${pct("test")}, seed ${split.seed} → ${countsStr}`,
+    ));
+  } else if (split.mode === "column") {
+    rows.push(line("split", `column '${split.column}' → ${countsStr}`));
+  }
+
+  const head = spec.head || {};
+  rows.push(line("head", `${head.kind ?? "?"} · ${head.loss ?? "?"} · ${head.primary_metric ?? "?"}`));
+  rows.push(line("task", spec.task_name));
+
+  return el("div", { class: "approval-spec-summary" }, rows);
+}
+
+/** One editable input, its `data-edit-path` matching a whitelisted entry in
+ * `tool_factory.py`'s `EDITABLE_ARGS["confirm_data_profile"]`. */
+function specField(path, label, value, { json = false } = {}) {
+  const stringValue = value === null || value === undefined ? "" : String(value);
+  const tag = json ? "textarea" : "input";
+  const props = {
+    class: "approval-edit-input" + (json ? " approval-edit-json" : ""),
+    "data-edit-path": path,
+  };
+  if (json) props["data-edit-json"] = "true";
+
+  const control = json
+    ? el(tag, { ...props, text: value ? JSON.stringify(value) : "" })
+    : el(tag, { ...props, value: stringValue });
+
+  return el("div", { class: "approval-edit-row" },
+            el("span", { class: "approval-label", text: label }), control);
+}
+
+/** The spec/plan edit form (Phase 13 §5): one row per editable field, pre-filled with the
+ * profiler's proposal. `app.js::_collectEdits` reads back whichever inputs the human
+ * actually changed. */
+function specForm(spec) {
+  const split = spec.split || {};
+  const fractions = split.fractions || {};
+
+  const rows = [
+    specField("spec.sequence_column", "sequence_column", spec.sequence_column),
+    specField("spec.label_column", "label_column", spec.label_column),
+    specField("spec.target_type", "target_type", spec.target_type),
+    specField("spec.task_name", "task_name", spec.task_name),
+    specField("spec.tool_description", "tool_description", spec.tool_description),
+    specField("spec.positive_class", "positive_class", spec.positive_class),
+    specField("spec.on_invalid", "on_invalid", spec.on_invalid),
+    specField("spec.split.mode", "split.mode", split.mode),
+    specField("spec.split.column", "split.column", split.column),
+    specField("spec.split.seed", "split.seed", split.seed),
+    specField("spec.split.stratify", "split.stratify", split.stratify),
+    specField("spec.split.fractions.train", "split.fractions.train", fractions.train),
+    specField("spec.split.fractions.val", "split.fractions.val", fractions.val),
+    specField("spec.split.fractions.test", "split.fractions.test", fractions.test),
+    specField("spec.split.mapping", "split.mapping (JSON)", split.mapping, { json: true }),
+  ];
+
+  return el("details", { class: "approval-spec-form" },
+            el("summary", { text: "edit fields" }), ...rows);
+}
+
 export function approvalBody(request) {
   const items = (request.requests || []).map((item) => {
     const details = item.details || {};
@@ -367,6 +469,10 @@ export function approvalBody(request) {
     if (details.tool) {
       rows.push(line("tool", details.tool));
       rows.push(line("state", `${details.current_state} → ${details.after_approval}`));
+    }
+    if (details.spec) {
+      rows.push(specSummary(details.spec));
+      rows.push(specForm(details.spec));
     }
     if (details.command) rows.push(line("would run", details.command.join(" "), { class: "approval-line approval-command" }));
     if (details.output_dir) rows.push(line("output", details.output_dir));
