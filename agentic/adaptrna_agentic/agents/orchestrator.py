@@ -179,9 +179,17 @@ def _path_covered(path: str, whitelist) -> bool:
 
 
 def _get_path(obj: Any, path: str) -> Any:
+    parts = path.split(".")
     node = obj
-    for part in path.split("."):
-        if not isinstance(node, dict) or part not in node:
+    for i, part in enumerate(parts):
+        if not isinstance(node, dict):
+            return None
+        # "overrides" (a training plan's config overrides) is a FLAT dict keyed by
+        # dotted strings ("optim.lr"), not a nested structure — everything after it is
+        # one key, not further path segments.
+        if part == "overrides" and i + 1 < len(parts):
+            return (node.get("overrides") or {}).get(".".join(parts[i + 1:]))
+        if part not in node:
             return None
         node = node[part]
     return node
@@ -190,7 +198,12 @@ def _get_path(obj: Any, path: str) -> Any:
 def _set_path(obj: Any, path: str, value: Any) -> None:
     parts = path.split(".")
     node = obj
-    for part in parts[:-1]:
+    for i, part in enumerate(parts[:-1]):
+        if part == "overrides" and i + 1 < len(parts):
+            if not isinstance(node.get("overrides"), dict):
+                node["overrides"] = {}
+            node["overrides"][".".join(parts[i + 1:])] = value
+            return
         if not isinstance(node.get(part), dict):
             node[part] = {}
         node = node[part]
@@ -260,6 +273,14 @@ def _apply_edits(args: Dict[str, Any], edits: Optional[Dict[str, Any]], tool_nam
         target = args.get(top_key)
         if isinstance(target, dict):
             target[record_key] = changes
+
+            if top_key == "plan":
+                # The gate shows plan["command"] verbatim (§4/§8): a training plan whose
+                # overrides changed but whose command did not would mean the human
+                # approved one command and a different one actually ran.
+                from adaptrna_agentic.profiling.recommender import build_command
+
+                target["command"] = build_command(target)
 
     return args
 

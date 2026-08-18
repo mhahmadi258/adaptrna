@@ -62,8 +62,20 @@ def test_numeric_looking_edit_to_a_string_field_is_coerced_back_to_a_string():
     assert result["spec"]["positive_class"] == "1"
 
 
+def _minimal_plan(**overrides):
+    """A plan with just enough fields for `build_command` to succeed -- the rebuild
+    `_apply_edits` triggers on any plan.* edit (see test_editing_plan_overrides_rebuilds_
+    the_command)."""
+    plan = {
+        "task": "x", "arm": "lora", "config_path": "adaptrna_custom/tasks/x/config.yaml",
+        "output_dir": "outputs/x", "seed": 42, "overrides": {},
+    }
+    plan.update(overrides)
+    return plan
+
+
 def test_numeric_cross_between_int_and_float_is_allowed():
-    args = {"plan": {"seed": 42}}
+    args = {"plan": _minimal_plan()}
     result = _apply_edits(args, {"plan.seed": 7.0}, "start_training")
     assert result["plan"]["seed"] == 7.0
 
@@ -92,12 +104,43 @@ def test_spec_edits_are_recorded_as_human_edits():
 
 
 def test_plan_edits_are_recorded_as_human_overrides():
-    args = {"plan": {"seed": 42}}
+    args = {"plan": _minimal_plan()}
     result = _apply_edits(args, {"plan.seed": 7}, "start_training")
 
     assert result["plan"]["human_overrides"] == {
         "plan.seed": {"recommended": 42, "chosen": 7},
     }
+
+
+def test_plan_overrides_is_a_flat_dotted_key_not_a_nested_structure():
+    """plan['overrides'] is keyed by dotted strings ('optim.lr') the engine's CLI reads
+    with --set; 'plan.overrides.optim.lr' must set that one flat key, not build a nested
+    {'optim': {'lr': ...}} the engine would never look at."""
+    args = {"plan": _minimal_plan(overrides={"optim.lr": 0.0003})}
+    result = _apply_edits(args, {"plan.overrides.optim.lr": 0.001}, "start_training")
+
+    assert result["plan"]["overrides"] == {"optim.lr": 0.001}
+    assert result["plan"]["human_overrides"] == {
+        "plan.overrides.optim.lr": {"recommended": 0.0003, "chosen": 0.001},
+    }
+
+
+def test_editing_plan_overrides_rebuilds_the_command():
+    """The gate shows plan['command'] verbatim -- an edited override with a stale command
+    would mean approving one thing and running another."""
+    from adaptrna_agentic.profiling.recommender import build_command
+
+    plan = {
+        "task": "x", "arm": "lora", "config_path": "adaptrna_custom/tasks/x/config.yaml",
+        "output_dir": "outputs/x", "seed": 42, "overrides": {"optim.lr": 0.0003},
+    }
+    plan["command"] = build_command(plan)
+    args = {"plan": plan}
+
+    result = _apply_edits(args, {"plan.overrides.optim.lr": 0.001}, "start_training")
+
+    assert "optim.lr=0.001" in result["plan"]["command"]
+    assert "optim.lr=0.0003" not in result["plan"]["command"]
 
 
 def test_a_field_with_no_prior_value_may_be_set():
