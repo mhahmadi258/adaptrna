@@ -280,10 +280,6 @@ the "16 management tools" count is unchanged — none are removed),
 the existing `sessionStorage` note), and [testing.md](../documents/testing.md) (the test
 tables).
 
-**Screenshots.** `docs/web-ui.png` shows the old picker and no rail. Re-take it. Capture the
-tool-activation modal during Gate 2 if it is cheap — `docs/approval-gate.png` is the
-precedent.
-
 **Grep gate — the docs are not done until this returns only historical references:**
 
 ```bash
@@ -327,7 +323,7 @@ Run from the layer directory; `testpaths` is relative. Baseline **381 green**
 4. **The routes**, then `test_ui_contract.py` re-pinned.
 5. **The rail**: markup and CSS, then `render.js`/`api.js`, then `app.js` wiring, then
    toggle and resize persistence.
-6. **Docs (§5)** and the grep gate; re-take `docs/web-ui.png`.
+6. **Docs (§5)** and the grep gate.
 7. **Browser suite** and the gates in §8; close out `MASTER_PLAN.md` §8.
 
 ---
@@ -365,8 +361,7 @@ sqlite3 chat_data/sessions.sqlite "SELECT DISTINCT thread_id FROM checkpoints"
 
 Filter narrows the list; drag the grip, collapse, reload — geometry persists.
 
-**Gate 5 — the docs match the code.** §5's grep returns only historical references, and
-`docs/web-ui.png` shows the rail.
+**Gate 5 — the docs match the code.** §5's grep returns only historical references.
 
 **Gate 6 — the two front ends are still one system** (Phase 8 §8 Gate 3, Phase 9 Gate 3): a
 session created in the rail appears in `chat --list-sessions` and continues from the
@@ -465,8 +460,6 @@ disabled tool the assistant wanted; the prompt is what makes the modal rare and 
 
 ### Notes for whoever is next
 
-* `docs/tool-gate.png` was captured from a *deactivation* request that was then declined, so
-  taking that screenshot changed no state. Worth copying as a technique.
 * The client is now **1,329 lines of JS**, past the thousand-line tripwire Phase 9 set, and
   carries its first client-side state. Not ported; the reasoning for holding is recorded in
   `ui/README.md` and it is weaker than it was. The next feature that adds state should treat

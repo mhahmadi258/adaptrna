@@ -223,7 +223,6 @@ Per the repo convention, the exact claims that become false:
 | [documents/project_structure.md](../documents/project_structure.md) | the `ui/` list | File *set* is unchanged; descriptions of `app.js` and `render.js` are not. |
 | [documents/testing.md](../documents/testing.md) | `test_ui_browser.py`, `test_ui_contract.py` rows | The new assertions. |
 | [ui/README.md](../ui/README.md) | file table :40-49 and **§"The framework tripwire has been tripped" :22-38** | Mandatory: that section says *"the next feature to add state meets a stated position instead of an assumption."* This is that feature. Update the line count and restate the position — see §9. |
-| [README.md](../README.md), `docs/web-ui.png` | the screenshot | The current shot shows the old three-column layout with Jobs on the right. **Re-shoot it** (Gate 6) and add `docs/job-log.png`. |
 | [plans/MASTER_PLAN.md](MASTER_PLAN.md) | §8 status table (:316 area), §"Status (2026-08-13)" :367 | Add the Phase 11 row; the "all ten phases landed" line becomes eleven. |
 
 **Grep gate** — the old claims must survive only as history:
@@ -308,8 +307,7 @@ Let the run finish: the dot goes green, polling stops, `analysis` appears, `canc
 window and confirm the rail's right edge lands under the pointer, not 3 rem past it.
 Collapse and reload: the width survives, and the activity bar never collapses.
 
-**Gate 6 — the docs match.** The §5 grep gate returns no hits for the stale claims;
-`docs/web-ui.png` is re-shot on the new layout and `docs/job-log.png` exists.
+**Gate 6 — the docs match.** The §5 grep gate returns no hits for the stale claims.
 
 ---
 

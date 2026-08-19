@@ -207,7 +207,7 @@ untouched at 135. All four gates passed against the real install in Chromium.
 | 1 — deterministic | agentic 381 ✅, engine 135 ✅ |
 | 2 — the Phase-5 scenario in a browser | profiled `dod_data/` → validated config → gate → approved → **monitor updated 9 times in place** (epoch 0/step 49 → epoch 4/step 200; train/loss 0.390→0.029, val/f1 0.923→0.970) → analysis `ok` + truncated caveat (test/f1 0.9686) → real 400 nt windows scored **0.9998** and **0.0047**. Zero JS errors throughout |
 | 3 — one system | browser session recalled verbatim from `chat --once`; the terminal's turn appeared in the browser on reload; both directions in the picker |
-| 4 — the gate is honest | the modal's command compared against `cli/chat.py::_prompt_approval` rendering the *same* suspended request: **621 chars, byte-identical**. Screenshot in [docs/approval-gate.png](../docs/approval-gate.png) |
+| 4 — the gate is honest | the modal's command compared against `cli/chat.py::_prompt_approval` rendering the *same* suspended request: **621 chars, byte-identical** |
 
 ### What the plan got wrong
 

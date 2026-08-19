@@ -17,7 +17,6 @@ adaptrna/
 ├── adaptrna_custom/   [gen]  generated tasks and wrappers — git-TRACKED source
 ├── ui/                [lib]  browser client, plain ES modules, no build step
 ├── plans/             [doc]  master plan + one detailed plan per phase
-├── docs/              [doc]  two screenshots referenced by the root README
 ├── documents/         [doc]  this documentation set
 ├── outputs/           [gen]  one directory per training run
 ├── toolhub_data/      [gen]  manifest, registry-owned adapters, staging
@@ -295,13 +294,12 @@ explaining that the API itself is fine.
 
 ---
 
-## `plans/` and `docs/`
+## `plans/`
 
 `plans/` holds the design record: [`MASTER_PLAN.md`](../plans/MASTER_PLAN.md) is the map
 (architecture, principles, engine constraints, phase roadmap, resolved decisions), and
 `PHASE_0`…`PHASE_9` are the detailed blueprints written before each phase. They explain
-*why*; this documentation describes *what*. `docs/` holds only the two PNG screenshots the
-root README embeds.
+*why*; this documentation describes *what*.
 
 ---
 

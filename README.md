@@ -73,27 +73,19 @@ it between your **sessions** and your **training runs** — both resizable, coll
 filterable. Sessions are shared with the terminal — start a conversation in `chat`, continue
 it in the browser, and back.
 
-![The AdaptRNA web UI](docs/web-ui.png)
-
 Pick a run and its log takes over the middle column, tailing while the run is going, with
 epoch, step and the latest metrics above it. A run is never *started* from here: that happens
 in the chat, behind the gate below, so nothing spends GPU time without you seeing the command
 first.
 
-![A training run's log](docs/job-log.png)
-
 Approvals show the **exact command** — byte for byte what the terminal prints, verified
 against the terminal's own renderer — because the only thing that makes the gate worth
-having is that you can see what you are agreeing to:
-
-![The approval gate](docs/approval-gate.png)
+having is that you can see what you are agreeing to.
 
 **Which tools are enabled is yours to decide.** The assistant can offer to flip a switch; it
 cannot flip one. A disabled tool is reported as disabled and the request stops there, and
 `activate_tool` / `deactivate_tool` come to you as an approval like any other consequential
-action — decline and the manifest is untouched:
-
-![The tool-state gate](docs/tool-gate.png)
+action — decline and the manifest is untouched.
 
 It binds to loopback and **refuses to start** on any other address without
 `ADAPTRNA_API_TOKEN` — this service can spend GPU hours and write code into your
