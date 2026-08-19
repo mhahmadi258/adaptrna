@@ -1,4 +1,4 @@
-# rendered by adaptrna template v2 from spec.json
+# rendered by adaptrna template v3 from spec.json
 """CSV/TSV datamodule for 'binary_column', rendered from the approved dataset spec.
 
 Reads exactly the sequence and label columns approved at gate 1, from whatever path
@@ -95,9 +95,11 @@ class SequenceDataset(Dataset):
 
 
 class CsvDataModule(pl.LightningDataModule):
-    def __init__(self, data_root, alphabet, batch_size=32, num_workers=0, pin_memory=False):
+    def __init__(self, data_root, alphabet, val_root=None, batch_size=32, num_workers=0,
+                 pin_memory=False):
         super().__init__()
         self.data_root = data_root
+        self.val_root = val_root
         self.alphabet = alphabet
         self.batch_size = batch_size
         self.num_workers = num_workers

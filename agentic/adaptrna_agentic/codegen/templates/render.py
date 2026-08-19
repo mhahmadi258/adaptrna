@@ -17,7 +17,7 @@ TEMPLATE_DIR = Path(__file__).parent
 TEMPLATE_VERSION = int((TEMPLATE_DIR / "TEMPLATE_VERSION").read_text().strip())
 
 SUPPORTED_TARGET_TYPES = ("binary", "multiclass", "regression")
-SUPPORTED_SPLIT_MODES = ("random", "column")
+SUPPORTED_SPLIT_MODES = ("random", "column", "file")
 MAX_CLASSES = 20
 
 _ENV = jinja2.Environment(
@@ -117,12 +117,15 @@ def _check_covers(spec: Dict[str, Any]) -> None:
             raise _NotCovered("split.fractions")
         if not isinstance(split.get("seed"), int):
             raise _NotCovered("split.seed")
-    else:
+    elif mode == "column":
         if not split.get("column"):
             raise _NotCovered("split.column")
         mapping = split.get("mapping") or {}
         if not mapping or not all(isinstance(v, list) and v for v in mapping.values()):
             raise _NotCovered("split.mapping")
+    else:
+        if not split.get("validation_path"):
+            raise _NotCovered("split.validation_path")
 
 
 # ---------------------------------------------------------------- context
@@ -142,6 +145,7 @@ def _context(spec: Dict[str, Any]) -> Dict[str, Any]:
         "label_column": spec["label_column"],
         "separator": fmt.get("separator", ","),
         "compression": fmt.get("compression"),
+        "has_header": bool(fmt.get("header", True)),
         "on_invalid": spec.get("on_invalid", "fail"),
         "classes": spec.get("classes"),
         "positive_class": spec.get("positive_class") if target_type == "binary" else None,
@@ -153,6 +157,7 @@ def _context(spec: Dict[str, Any]) -> Dict[str, Any]:
         "split_stratify": bool(split.get("stratify")) and target_type != "regression",
         "split_column": split.get("column"),
         "split_mapping": split.get("mapping"),
+        "split_validation_path": split.get("validation_path"),
     }
 
 

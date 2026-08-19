@@ -1,31 +1,37 @@
 # rendered by adaptrna template v3 from spec.json
-"""multiclass target from a flat sequence/label table"""
+"""binary target from a flat sequence/label table"""
 
 import torch
 import torch.nn as nn
-from torchmetrics.classification import MulticlassAccuracy, MulticlassF1Score
+from torchmetrics.classification import (
+    BinaryAccuracy, BinaryF1Score, BinaryPrecision, BinaryRecall,
+)
 
 from rinalmo.data.alphabet import Alphabet
 from rinalmo_hub.module import BaseDownstreamModule
 from rinalmo_hub.registry import register_task
 
-CLASSES = ['0', '1', '2']
-NUM_CLASSES = len(CLASSES)
+CLASSES = ['0', '1']
+POSITIVE_CLASS = '0'
 
-@register_task("multiclass_random")
-class MulticlassRandomModule(BaseDownstreamModule):
-    """multiclass target from a flat sequence/label table"""
+@register_task("binary_headerless")
+class BinaryHeaderlessModule(BaseDownstreamModule):
+    """binary target from a flat sequence/label table
 
-    TASK_NAME = "multiclass_random"
+    Positive class: '0'. `postprocess_predictions` returns the
+    probability of this class.
+    """
+
+    TASK_NAME = "binary_headerless"
     ADAPTER_EXTRA_PREFIXES = ()
-    PRIMARY_METRIC = "test/macro_f1"
+    PRIMARY_METRIC = "test/f1_score"
 
     def build_head(self, embed_dim, hidden_dim: int = 32, **kwargs):
         if kwargs:
             raise TypeError(f"Unexpected head config keys: {sorted(kwargs)}")
 
         return nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, NUM_CLASSES)
+            nn.Linear(embed_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, 1)
         )
 
     def build_metrics(self, stage):
@@ -33,8 +39,8 @@ class MulticlassRandomModule(BaseDownstreamModule):
             return None
 
         return nn.ModuleDict({
-            "acc": MulticlassAccuracy(num_classes=NUM_CLASSES),
-            "macro_f1": MulticlassF1Score(num_classes=NUM_CLASSES, average="macro"),
+            "acc": BinaryAccuracy(), "precision": BinaryPrecision(),
+            "recall": BinaryRecall(), "f1_score": BinaryF1Score(),
         })
 
     def extract_features(self, representation, tokens):
@@ -43,15 +49,18 @@ class MulticlassRandomModule(BaseDownstreamModule):
 
     def compute_loss(self, outputs, batch):
         _, labels = batch
-        return nn.functional.cross_entropy(outputs, labels)
+        return nn.functional.binary_cross_entropy_with_logits(
+            outputs, labels.unsqueeze(1).to(outputs.dtype)
+        )
 
     def update_metrics(self, outputs, batch, stage):
         if stage not in self.metrics:
             return
 
         _, labels = batch
+        probs = torch.sigmoid(outputs.float())
         for metric in self.metrics[stage].values():
-            metric.update(outputs.float(), labels)
+            metric.update(probs, labels.unsqueeze(1).int())
 
     def compute_metrics(self, stage):
         if stage not in self.metrics:
@@ -61,21 +70,14 @@ class MulticlassRandomModule(BaseDownstreamModule):
                 for name, metric in self.metrics[stage].items()}
 
     def postprocess_predictions(self, outputs, tokens, sequences):
-        probs = torch.softmax(outputs.float(), dim=-1)
-        predictions = []
-        for row in probs.tolist():
-            index = max(range(len(row)), key=row.__getitem__)
-            predictions.append({
-                "label": CLASSES[index],
-                "probabilities": dict(zip(CLASSES, row)),
-            })
-        return predictions
+        # Probability of the positive class, '0'.
+        return torch.sigmoid(outputs.float()).squeeze(-1)
 
     def adapter_extra_payload(self) -> dict:
         # The class order (and, for binary, which class is positive) decides what a
         # prediction MEANS. Ship it in the adapter file so a reload can check itself
         # against it rather than silently relabelling.
-        return {"classes": CLASSES}
+        return {"classes": CLASSES, "positive_class": POSITIVE_CLASS}
 
     def load_adapter_extra(self, extra: dict) -> None:
         if not extra:
@@ -87,10 +89,17 @@ class MulticlassRandomModule(BaseDownstreamModule):
                 f"loaded module defines CLASSES = {CLASSES}. Loading it would silently "
                 f"relabel every prediction."
             )
+        if extra.get("positive_class") != POSITIVE_CLASS:
+            raise ValueError(
+                f"This adapter was saved with positive_class = "
+                f"{extra.get('positive_class')!r}, but the loaded module defines "
+                f"POSITIVE_CLASS = {POSITIVE_CLASS!r}. Loading it would silently invert "
+                f"every prediction."
+            )
 
     @staticmethod
     def build_datamodule(cfg):
-        from adaptrna_custom.tasks.multiclass_random.datamodule import CsvDataModule
+        from adaptrna_custom.tasks.binary_headerless.datamodule import CsvDataModule
 
         data = cfg["data"]
         return CsvDataModule(

@@ -269,6 +269,96 @@ def test_empty_column_split_raises(tmp_path):
     assert "test" in detail
 
 
+def test_headerless_csv_renders_and_passes_the_harness(tmp_path):
+    """A file with no header row is detected, rendered with header=False, and the
+    rendered datamodule reads it back the same way (positional column names)."""
+    spec = _rendered_spec(
+        "binary", "binary_headerless.csv",
+        sequence_column="0", label_column="1",
+        classes=["0", "1"], positive_class="1",
+        head={"primary_metric": "test/f1_score"},
+        format={"separator": ",", "compression": None, "header": False},
+    )
+    assert templates.covers(spec)
+
+    files = templates.render(spec)
+    staged = stage_task(spec["task_name"], files, data_dir=tmp_path / "toolhub_data")
+
+    report = verify_task(
+        spec["task_name"],
+        task_module=staged.module_path,
+        config_path=str(staged.config_path),
+        sys_path=[str(staged.root)],
+        sequences=SEQS,
+        timeout=600,
+    )
+
+    assert report["ok"], summarize(report)
+
+
+def test_file_mode_split_renders_and_passes_the_harness(tmp_path):
+    """split.mode == 'file': validation comes from a second, separate CSV -- the rendered
+    datamodule reads both files and trains/validates against them directly."""
+    spec = _rendered_spec(
+        "binary", "binary.csv",
+        classes=["0", "1"], positive_class="1",
+        head={"primary_metric": "test/f1_score"},
+    )
+    spec["split"] = {
+        "mode": "file",
+        "validation_path": str((FIXTURE_DATA / "binary_val.csv").resolve()),
+        "test_fraction": 0.0,
+        "fractions": None, "seed": None, "stratify": None, "column": None, "mapping": None,
+    }
+    assert templates.covers(spec)
+
+    files = templates.render(spec)
+    staged = stage_task(spec["task_name"], files, data_dir=tmp_path / "toolhub_data")
+
+    report = verify_task(
+        spec["task_name"],
+        task_module=staged.module_path,
+        config_path=str(staged.config_path),
+        sys_path=[str(staged.root)],
+        sequences=SEQS,
+        timeout=600,
+    )
+
+    assert report["ok"], summarize(report)
+
+
+def test_file_mode_split_raises_when_the_validation_file_is_empty(tmp_path):
+    """Fix-4-style catch: an empty (header-only) validation file must raise loudly, not
+    silently train with a 0-row val set."""
+    empty_val = tmp_path / "empty_val.csv"
+    empty_val.write_text("sequence,label\n")
+
+    spec = _rendered_spec(
+        "binary", "binary.csv",
+        classes=["0", "1"], positive_class="1",
+        head={"primary_metric": "test/f1_score"},
+    )
+    spec["split"] = {
+        "mode": "file", "validation_path": str(empty_val), "test_fraction": 0.0,
+        "fractions": None, "seed": None, "stratify": None, "column": None, "mapping": None,
+    }
+    files = templates.render(spec)
+    staged = stage_task(spec["task_name"], files, data_dir=tmp_path / "toolhub_data")
+
+    report = verify_task(
+        spec["task_name"],
+        task_module=staged.module_path,
+        config_path=str(staged.config_path),
+        sys_path=[str(staged.root)],
+        sequences=SEQS,
+        timeout=600,
+    )
+
+    assert not report["ok"]
+    detail = next(c["detail"] for c in report["checks"] if c["name"] == "datamodule")
+    assert "empty" in detail and "val" in detail
+
+
 def test_binary_positive_class_is_independent_of_class_order(tmp_path):
     """Fix 5: `classes: ["1", "0"]` must not silently flip which class is positive —
     polarity comes only from `positive_class`."""

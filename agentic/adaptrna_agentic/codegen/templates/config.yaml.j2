@@ -6,6 +6,9 @@ head:
 
 data:
   root: {{ data_path | tojson }}
+{% if split_mode == "file" %}
+  val_root: {{ split_validation_path | tojson }}
+{% endif %}
   batch_size: 32
   num_workers: 0
 

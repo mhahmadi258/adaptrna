@@ -1,5 +1,5 @@
 # rendered by adaptrna template v3 from spec.json
-task: regression_column
+task: binary_headerless
 
 head:
   hidden_dim: 32

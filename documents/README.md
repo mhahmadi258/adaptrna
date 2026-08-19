@@ -258,7 +258,7 @@ documents/
 
 Two of these are worth reading early even if you are not yet changing anything:
 
-* **[testing.md](testing.md)** — how 611 tests run with no GPU, no weights and no API key,
+* **[testing.md](testing.md)** — how 633 tests run with no GPU, no weights and no API key,
   and what each test file was written to prevent. The suite doubles as documentation.
 * **[extending.md](extending.md)** — a lookup table from "I want to change X" to the file to
   edit and the things to update alongside it, plus the list of things not to do and why.
@@ -282,7 +282,7 @@ the counts were re-measured on 2026-08-18 after Phase 13 (cold start — see
 | Fact | Value |
 |---|---|
 | Engine test suite | **135 passed**, 7 deselected (`gpu`/`weights`/`data` markers) — unchanged; Phase 13 does not touch `engine/` (D1) |
-| Agentic test suite | **611 tests** collected (`pytest tests/ --collect-only`, 2026-08-18), up from 381 before Phase 13 |
+| Agentic test suite | **633 tests** collected (`pytest tests/ --collect-only`, 2026-08-19), up from 381 before Phase 13 |
 | Python | 3.12 (`.venv/`) |
 | Registered tools on a fresh install | **none.** The platform ships no task definitions and no adapters; the first `toolhub list` after the Phase 13 clean-slate step (plan §15) shows an empty tool list, and the first tool on any install is one a user built from their own CSV |
 | Configured backbone | `giga` at `~/.cache/rinalmo_pretrained/giga-v1.pt` |

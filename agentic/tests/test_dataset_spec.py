@@ -132,7 +132,7 @@ def test_unknown_split_mode_is_rejected(binary_csv):
     spec = profile_dataset(binary_csv)
     spec["split"] = {"mode": "kfold"}
 
-    with pytest.raises(ToolHubError, match="'random' or 'column'"):
+    with pytest.raises(ToolHubError, match="'random', 'column' or 'file'"):
         confirm_profile(spec)
 
 
@@ -217,3 +217,115 @@ def test_positive_class_not_in_classes_is_rejected(binary_csv):
 
     with pytest.raises(ToolHubError, match="positive_class"):
         confirm_profile(spec)
+
+
+# ---------------------------------------------------------------------- format.header / separator
+
+def test_editing_format_header_is_honoured_on_reconfirm(tmp_path):
+    """A human who disagrees with the auto-detected header-ness can correct it at the
+    gate, and confirm_profile must re-read the file that way rather than trusting the
+    original detection. The header row is literally named "0","1" so the column
+    identifiers stay valid under either reading -- isolating the header edit from any
+    column-name edit -- and proven by row count, which shifts by exactly one depending
+    on whether row 1 is treated as data or consumed as a header."""
+    path = tmp_path / "data.csv"
+    rows = ["0,1"] + [f"{'ACGU' * 10},{i % 2}" for i in range(40)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+    assert spec["format"]["header"] is True
+    assert spec["sequence_column"] == "0" and spec["label_column"] == "1"
+    assert sum(spec["class_counts"].values()) == 40
+
+    spec["format"]["header"] = False  # the human insists row 1 ("0,1") is data
+
+    approved = confirm_profile(spec)
+
+    assert sum(approved["class_counts"].values()) == 41
+
+
+def test_editing_format_separator_is_honoured_on_reconfirm(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence,label"] + [f"{'ACGU' * 10},{i % 2}" for i in range(40)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+    assert spec["format"]["separator"] == ","
+
+    # A malicious/incorrect edit to the wrong separator must fail loudly, not silently
+    # misparse -- proving the edit really does take effect on re-validation.
+    spec["format"]["separator"] = ";"
+
+    with pytest.raises(ToolHubError):
+        confirm_profile(spec)
+
+
+# ---------------------------------------------------------------------- split.mode == "file"
+
+@pytest.fixture
+def train_and_val_csv(tmp_path):
+    train_path = tmp_path / "train.csv"
+    val_path = tmp_path / "val.csv"
+    train_path.write_text(
+        "\n".join(["sequence,label"] + [f"{'ACGU' * 10},{i % 2}" for i in range(40)]) + "\n"
+    )
+    val_path.write_text(
+        "\n".join(["sequence,label"] + [f"{'ACGC' * 10},{i % 2}" for i in range(10)]) + "\n"
+    )
+    return train_path, val_path
+
+
+def test_file_mode_is_accepted_and_row_counts_recomputed(train_and_val_csv):
+    train_path, val_path = train_and_val_csv
+    spec = profile_dataset(train_path, validation_path=val_path)
+
+    approved = confirm_profile(spec)
+
+    assert approved["split"]["mode"] == "file"
+    assert approved["split"]["row_counts"] == {"train": 40, "val": 10, "test": 0}
+
+
+def test_file_mode_missing_validation_path_is_rejected(binary_csv):
+    spec = profile_dataset(binary_csv)
+    spec["split"] = {
+        "mode": "file", "validation_path": None, "test_fraction": 0.0,
+        "fractions": None, "seed": None, "stratify": None, "column": None, "mapping": None,
+    }
+
+    with pytest.raises(ToolHubError, match="validation_path"):
+        confirm_profile(spec)
+
+
+def test_file_mode_unreadable_validation_path_is_rejected(binary_csv, tmp_path):
+    spec = profile_dataset(binary_csv)
+    spec["split"] = {
+        "mode": "file", "validation_path": str(tmp_path / "nowhere.csv"), "test_fraction": 0.0,
+        "fractions": None, "seed": None, "stratify": None, "column": None, "mapping": None,
+    }
+
+    with pytest.raises(ToolHubError, match="does not exist"):
+        confirm_profile(spec)
+
+
+def test_file_mode_cross_file_leakage_is_warned_on_reconfirm(tmp_path):
+    shared = "ACGU" * 10
+    bases = "ACGU"
+
+    def _seq(i):
+        return "".join(bases[(i + j) % 4] for j in range(32))
+
+    train_path = tmp_path / "train.csv"
+    val_path = tmp_path / "val.csv"
+    train_path.write_text(
+        "\n".join(["sequence,label", f"{shared},0"]
+                   + [f"{_seq(i)},{i % 2}" for i in range(39)]) + "\n"
+    )
+    val_path.write_text(
+        "\n".join(["sequence,label", f"{shared},1"]
+                   + [f"{_seq(i + 100)},{i % 2}" for i in range(9)]) + "\n"
+    )
+
+    spec = profile_dataset(train_path, validation_path=val_path)
+    approved = confirm_profile(spec)
+
+    assert any("train and val" in w for w in approved["warnings"])

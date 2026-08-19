@@ -73,7 +73,7 @@ agentic/adaptrna_agentic/codegen/templates/
 ```python
 covers(spec: dict) -> bool     # whitelist predicate — see below
 render(spec: dict) -> {"task.py": str, "datamodule.py": str, "config.yaml": str}
-TEMPLATE_VERSION: int          # read once at import from the TEMPLATE_VERSION file (currently 2)
+TEMPLATE_VERSION: int          # read once at import from the TEMPLATE_VERSION file (currently 3)
 ```
 
 ### `covers(spec)`
@@ -90,8 +90,8 @@ it wrongly accepts still has to pass the identical harness and review as generat
 * `head.primary_metric` is set;
 * for `binary`/`multiclass`: `classes` has between 2 and `MAX_CLASSES` (20) entries, and for
   `binary` specifically exactly 2, with `positive_class` one of them;
-* `split.mode` is `random` (fractions sum to 1.0 ±1e-6, an int seed) or `column` (a column
-  name and a non-empty mapping).
+* `split.mode` is `random` (fractions sum to 1.0 ±1e-6, an int seed), `column` (a column
+  name and a non-empty mapping), or `file` (a non-empty `validation_path`).
 
 Anything else — a spec field outside this list, or a value outside these ranges — makes
 `covers()` return `False`, and the spec falls straight to the LLM loop with no attempt at
@@ -109,10 +109,13 @@ context key nobody supplied fails loudly at render time instead of emitting a bl
   `BaseDownstreamModule` subclass — head, `extract_features`, loss, metrics, adapter state,
   all written out. No shipped base class stands behind it, which is what keeps a rendered
   task exactly as readable and editable as a generated one.
-* **Conditionals stay shallow.** Three target types × two split modes is handled by
+* **Conditionals stay shallow.** Three target types × three split modes is handled by
   branching on `target_type` and `split_mode` inside the templates (`{% if %}` blocks), not
-  by a matrix of template files. A fourth axis is the signal to reconsider the mechanism,
-  not to nest further.
+  by a matrix of template files. A third axis is the signal to reconsider the mechanism,
+  not to nest further. `split_mode == "file"` reads a second file (`self.val_root`, from
+  `config.yaml`'s `data.val_root`) through the same `_read_frame` the main path uses —
+  `has_header` applies to both files equally, since `mode: "file"` assumes they share a
+  shape.
 * **Version-stamped.** Every rendered file's first line is
   `# rendered by adaptrna template v<N> from spec.json`. `pipeline._attempt_template` also
   stamps `template_version` onto the `spec.json` that lands beside the code — see §3 and
@@ -121,9 +124,10 @@ context key nobody supplied fails loudly at render time instead of emitting a bl
   `template_version` key at all) or one landed before this phase (no `spec.json` at all).
 * **Ordinary reviewed code.** The `.j2` files are written by a human, live in the
   repository, and are covered by golden-file tests (`test_templates_render.py`) that assert
-  byte-for-byte output for each of the three target types × two split modes. The review that
-  used to happen per generated task happens here, once, in a pull request against the
-  templates.
+  byte-for-byte output for each of the three target types × two split modes, plus one
+  `file`-mode and one headerless case (not a full three-way cross product — one case per new
+  axis value is enough to catch a template regression). The review that used to happen per
+  generated task happens here, once, in a pull request against the templates.
 
 ## 3. `pipeline.py` — the bounded loop, and where it isn't bounded
 

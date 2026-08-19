@@ -128,7 +128,7 @@ values, because the recommender and the templates have no other source for them.
 ## 3. `profiler.py` — one table in, a `DatasetSpec` out
 
 ```python
-profile_dataset(path) -> dict     # proposal; agent-tool ready
+profile_dataset(path, validation_path=None) -> dict   # proposal; agent-tool ready
 confirm_profile(spec) -> dict     # gate 1's re-validation; what confirm_data_profile calls
 ```
 
@@ -136,11 +136,26 @@ Full schema: [../configuration.md §11](../configuration.md#11-the-datasetspec-s
 
 This build starts empty and accepts exactly one input: `.csv`, `.tsv`, or either gzipped —
 one delimited table with one sequence column and one label column. There is no directory
-profiling, no layout matching, no format-specific sniffing left; anything else is refused by
-name rather than reshaped:
+profiling and no layout matching; anything else is refused by name rather than reshaped:
 
 > `This build trains from a single table (.csv/.tsv, optionally gzipped) containing one
 > sequence column and one label column. '<path>' is a directory.`
+
+Two things it *does* sniff, both auto-detected and correctable at gate 1 rather than assumed
+and left silent:
+
+* **Delimiter.** `.tsv` is always tab. `.csv`'s delimiter is sniffed from the file's first
+  ~10 lines (`csv.Sniffer`, restricted to `,;\t|`) — a `.csv` extension alone doesn't
+  guarantee a comma; semicolon-delimited exports under `.csv` are common. Never the whole
+  file, so this stays cheap on a large dataset.
+* **Header presence.** Assumed present first. If the sequence/label detectors can't find
+  both columns that way, *or* they can but the "column name" the header-assumed read
+  produced is itself a plausible sequence value (the tell that row 1 was silently eaten as a
+  header when it was actually the first data row), `profile_dataset` retries once with
+  `header=None` and commits to that reading if it cleanly finds both columns. Headerless
+  columns are string-labelled positionally (`"0"`, `"1"`, ...) — both detectors already work
+  unmodified against those, since their fallback paths sniff by content/dtype, not by name.
+  A spec built this way carries `format["header"] = False` and a warning saying so.
 
 ### Column and target detection
 
@@ -195,7 +210,9 @@ dropped or fixed — the gate exists precisely so a human decides what to do abo
 | Tiny data | `_tiny_data_warning` | fewer than 200 usable rows after splitting |
 | Leakage across a column split | `_leakage_warning` | (mode `"column"` only) a sequence appears in more than one named split group — computed exactly, e.g. *"318 sequences appear in both the train and test groups"* |
 | Dropped rows | inline in `_quality_warnings` | (mode `"column"` only) rows whose split-column value names no split in the mapping |
+| Cross-file leakage | inline in `_quality_warnings`, via the shared `_overlap_warning` | (mode `"file"` only) a sequence appears in both the main file and `validation_path` — same reporting as the column-mode leakage check, generalised from one file's groups to two files |
 | No held-out set | inline in `_quality_warnings` | (mode `"random"` only) `fractions.test == 0` — the primary metric falls back to `val/*` |
+| No header row detected | inline in `profile_dataset` | the file was read with `header=None` after the header-assumed read failed or looked suspicious — says row 1 is being treated as data and how to correct it |
 
 ## 5. The split
 
@@ -203,7 +220,12 @@ dropped or fixed — the gate exists precisely so a human decides what to do abo
 sequence and label columns) whose values look like split names (`train`/`training`,
 `val`/`valid`/`validation`/`dev`, `test`/`testing`, case-insensitive). Found one → propose
 `mode: "column"` with the obvious mapping. Otherwise → `mode: "random"`,
-`{train: 0.8, val: 0.1, test: 0.1}`, `seed: 42`, `stratify: true` for classification.
+`{train: 0.8, val: 0.1, test: 0.1}`, `seed: 42`, `stratify: true` for classification. If the
+caller passed `validation_path`, none of that runs — `profile_dataset` proposes
+`mode: "file"` directly: validation is the entirety of that second file, read with the main
+file's own separator/compression/header, refusing loudly if it lacks the same two columns
+rather than reshaping it. `test_fraction` is always `0.0` today (no carve-out from either
+file — the primary metric falls back to `val/*`, exactly like a `test: 0` random split).
 
 At gate 1, `confirm_profile` re-validates and **recomputes** the split against the real file
 (`_validate_and_recompute_split`), whatever the human changed:
@@ -212,8 +234,10 @@ At gate 1, `confirm_profile` re-validates and **recomputes** the split against t
 * `test` may be 0 (see the warning above);
 * column mode needs a non-empty `mapping` naming at least one split; values not named are
   dropped, and the drop count is reported;
-* every mode returns `row_counts` recomputed from the file, never the original ratios — the
-  user approves actual numbers.
+* file mode needs `validation_path` to name an existing, readable file with the same
+  `sequence_column`/`label_column` as the main file;
+* every mode returns `row_counts` recomputed from the file(s), never the original ratios —
+  the user approves actual numbers.
 
 ## 6. Reuse: `_similar_tasks`
 
@@ -402,3 +426,11 @@ recommend("no_such_task")
   [the analyzer](jobs.md#7-analysispy--the-runanalyzer) are for.
 * **`knowledge/*.yaml` is loaded once per process** (`lru_cache`). Editing it requires a
   restart.
+* **A wrong delimiter sniff usually surfaces as the existing "no sequence column" refusal**,
+  not a distinguishable error of its own — a mis-sniffed file parses into one garbled
+  column, which fails detection the same way a genuinely unsupported file would. The fix is
+  the same either way: correct `spec.format.separator` at the gate and re-run
+  `profile_dataset`, or convert the file by hand first.
+* **`mode: "file"` assumes the validation file shares the main file's shape** — same
+  separator, compression and header-ness; that shape is applied to it, not independently
+  re-detected. A second file laid out differently needs converting to match first.

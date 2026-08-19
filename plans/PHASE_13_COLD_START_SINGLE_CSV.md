@@ -36,7 +36,7 @@ gate are new. Nothing downstream of `start_training` changes.
 | D2 | The ViennaRNA wrapper is **deleted**, not merely unregistered. It played the same role for flow E that the worked example played for flow D — a shipped implementation shown to a generator as the thing to imitate — so it goes for the same reason (see §1.1) | `external/vienna.py` deleted; `external_tool_prompt` carries `contract.py` only |
 | D3 | The profiling result is approved through a **real gated tool** on the interpretation, not a conversational "shall I proceed?" | New `confirm_data_profile` in `GATED_TOOLS` |
 | D4 | Hyperparameters come from a **generic knowledge-base entry**, and **the human may edit them in the gate** before approving | New `generic:` section; approval decisions must be able to carry edits |
-| D5 | Splits are either **random with user-specified fractions** or **taken from a column** (values naming the splits, or a user-supplied value→split mapping) | The split policy is part of the approved spec |
+| D5 | Splits are **random with user-specified fractions**, **taken from a column** (values naming the splits, or a user-supplied value→split mapping), or **a second, separate file** for validation (added after the initial phase landed) | The split policy is part of the approved spec |
 | D6 | The ToolSmith prompt loses **both** the knowledge-base task shapes **and** the worked example; it keeps the engine's subclass contract, the silent-failure rules — plus **generic head recipes keyed on target type**, carrying no task identity | `prompts.py` rewritten |
 | D7 | Supported label types: **binary, multiclass, regression**. Anything else is **refused** at the profile gate with a statement of what is supported | Three recipes, one refusal path |
 | D8 | Input is **one table**; `.tsv` and `.csv.gz` are accepted because they are the same read. Directories and FASTA are refused | The directory/FASTA/Spliceator/MRL branches are deleted |
@@ -180,9 +180,16 @@ registered tool. It is produced by the profiler as a *proposal*, edited and appr
 1, consumed by codegen, written beside the landed code as `spec.json`, and copied into the
 tool's manifest `provenance` at registration.
 
+**Added after the initial phase landed** (still tracked here so this stays accurate): a
+`.csv`'s delimiter is sniffed from its first few lines rather than assumed comma
+(`format.separator`), a file with no header row is detected and read positionally
+(`format.header`), and `split.mode` gained a third value, `"file"` — validation from a
+second, separate CSV/TSV rather than a column or a random carve-out. All three are
+auto-detected/proposed exactly like everything else here, correctable at gate 1.
+
 ```jsonc
 {
-  "spec_version": 1,
+  "spec_version": 2,
   "source": "confirm_data_profile",          // stamped, like the training plan
   "path": "/abs/path/to/data.csv",
   "format": {"separator": ",", "compression": null, "rows": 24188, "header": true},
@@ -204,12 +211,14 @@ tool's manifest `provenance` at registration.
   "length": {"min": 400, "median": 400, "max": 400},
 
   "split": {
-    "mode": "random",                         // random | column
+    "mode": "random",                         // random | column | file
     "fractions": {"train": 0.8, "val": 0.1, "test": 0.1},
     "seed": 42,
     "stratify": true,                         // classification only
     "column": null,                           // mode=column
     "mapping": null,                          // mode=column: {"train": ["train"], ...}
+    "validation_path": null,                  // mode=file: a second table, val in full
+    "test_fraction": 0.0,                     // mode=file: always 0 today (no carve-out)
     "row_counts": {"train": 19350, "val": 2419, "test": 2419},
     "dropped_rows": 0
   },
@@ -250,7 +259,7 @@ registration.
 
 ## 4. Step 1 — profiling, and gate 1
 
-### `profiler.profile_dataset(path)` — rewritten
+### `profiler.profile_dataset(path, validation_path=None)` — rewritten
 
 Accepts `.csv`, `.tsv`, `.csv.gz`, `.tsv.gz`. Anything else — a directory, `.fa`, `.pt`, an
 unknown suffix — raises `ToolHubError` with:
@@ -264,10 +273,12 @@ count is how you get a stratified split that is not):
 
 | Field | How |
 |---|---|
-| `sequence_column` | name hints, then content sniffing (`_SEQUENCE_PURITY = 0.9`) — unchanged logic |
+| `format.separator` | `.tsv` is always tab; `.csv` is sniffed from its first ~10 lines (`csv.Sniffer`, restricted to `,;\t\|`) — never the whole file |
+| `format.header` | assumed present; if the sequence/label detectors fail to find both columns, **or** the column name the header-assumed read produced itself looks like a sequence value (the strong tell that row 1 was data, not a header), retried once with `header=None` |
+| `sequence_column` | name hints, then content sniffing (`_SEQUENCE_PURITY = 0.9`) — unchanged logic, and it already works unmodified against positionally-named ("0", "1", ...) headerless columns |
 | `label_column` | name hints, then first numeric non-sequence column — unchanged logic |
 | `target_type` | unchanged thresholds: 2 uniques → `binary`; ≤20 integer uniques → `multiclass`; numeric otherwise → `regression`; non-numeric ≤20 uniques → `multiclass` (values become `classes`) |
-| `split_candidates` | every non-sequence, non-label column with ≤10 distinct values, with its value counts — this is what makes `mode: "column"` offerable |
+| `split_candidates` | every non-sequence, non-label column with ≤10 distinct values, with its value counts — this is what makes `mode: "column"` offerable; empty when `validation_path` is given (mode: "file" is proposed directly instead) |
 | `warnings` | the quality checks below |
 
 **Quality checks, each a warning string on the spec** (they are the reason profiling is a
@@ -304,15 +315,23 @@ No conversion is offered and none is improvised.
 `seed: 42`, `stratify: true` for classification. If it finds a split candidate column whose
 values look like split names (`train`, `val`, `valid`, `validation`, `test`, `dev`,
 case-insensitive), it proposes `mode: "column"` with the obvious mapping instead and reports
-the row counts.
+the row counts. If a `validation_path` is given, it proposes `mode: "file"` directly instead
+of either — validation is the entirety of that second file, read with the main file's own
+separator/compression/header, refusing loudly (not silently reshaping) if it lacks the same
+two columns. `test_fraction` is always `0.0` today: no carve-out from either file, so the
+primary metric falls back to `val/*` exactly as it does for a `test: 0` random split.
 
 At gate 1 the user may switch modes, change fractions or seed, or supply a mapping for
-arbitrary values (`{"train": ["human", "mouse"], "test": ["fly"]}`). Rules enforced when the
-edit is validated:
+arbitrary values (`{"train": ["human", "mouse"], "test": ["fly"]}`), or a `validation_path`.
+Rules enforced when the edit is validated:
 
 * fractions must be positive and sum to 1.0 (±1e-6);
 * `test` may be set to 0, in which case the primary metric becomes `val/*` and the spec
   carries a warning that there is no held-out number;
+* `mode: "file"` requires `validation_path` to name an existing, readable file with the same
+  `sequence_column`/`label_column` as the main file; a sequence appearing in both files is
+  reported the same way column-mode leakage is — *"12 sequences appear in both the train and
+  val groups"*;
 * in `column` mode, values not named in the mapping are **dropped**, and the dropped row
   count is shown in the gate before approval — never silently;
 * every mode produces `row_counts`, recomputed by the validator, so the user approves actual
@@ -404,7 +423,8 @@ The change, kept as small as it can be:
        "confirm_data_profile": ("spec.sequence_column", "spec.label_column",
                                 "spec.target_type", "spec.task_name",
                                 "spec.tool_description", "spec.positive_class",
-                                "spec.split.*"),
+                                "spec.split.*", "spec.format.header",
+                                "spec.format.separator"),
        "start_training":       ("plan.overrides.*", "plan.seed", "plan.arm",
                                 "plan.quick_run"),
    }
@@ -598,8 +618,8 @@ flowchart TD
 ```
 
 `covers(spec)` is a plain predicate over the spec: every field is one the template knows,
-the target type is one of the three, the split mode is one of the two, and no field carries a
-value outside its declared range. It is cheap and it is honest about being incomplete — which
+the target type is one of the three, the split mode is one of the three, and no field carries
+a value outside its declared range. It is cheap and it is honest about being incomplete — which
 is why the **real** boundary is reactive rather than predictive:
 
 > **A harness failure or a review rejection on the template path is not an error — it is the
@@ -639,9 +659,9 @@ agentic/adaptrna_agentic/codegen/templates/
   since they are the user's code now — but `toolhub doctor` gains a check listing landed
   tasks rendered from a superseded version, so *stale* is a visible state rather than an
   invisible one.
-* **Conditionals stay shallow.** Three target types × two split modes is handled by branching
-  on `spec.target_type` and `spec.split.mode` inside the templates, not by a matrix of
-  template files. If a fourth axis ever appears, that is the signal to reconsider the
+* **Conditionals stay shallow.** Three target types × three split modes is handled by
+  branching on `spec.target_type` and `spec.split.mode` inside the templates, not by a matrix
+  of template files. If a third axis ever appears, that is the signal to reconsider the
   mechanism rather than to nest further.
 * **The templates are ordinary reviewed code.** They are written by a human, live in the
   repository, and are covered by the golden tests of §13. The review that used to happen per
@@ -919,7 +939,7 @@ them unchanged.
 | `test_approval_edits.py` | `_apply_edits` whitelist enforcement, type checking, unknown path refusal; an edited plan rebuilds `command`; `human_overrides` recorded; a recorded failure mode produces its warning |
 | `test_split_policy.py` | random split determinism under a seed, stratification preserves class ratios, column mode maps and drops correctly, dropped rows reported, leakage detection across a column split |
 | `test_generic_recommender.py` | derived batch size at each length band, the step-budget epoch rule at 500 / 20k / 500k rows, clamping, rationale lines generated from `why:` |
-| `test_templates_render.py` | **golden-file tests**: each of the three target types × two split modes renders byte-for-byte expected output. Cheap, fast, no model, and the thing that makes a template change reviewable as a diff |
+| `test_templates_render.py` | **golden-file tests**: each of the three target types × two split modes renders byte-for-byte expected output, plus one binary+`file`-mode and one binary+headerless case (not a full three-way cross product — one representative case per new axis value is enough to catch a template regression). Cheap, fast, no model, and the thing that makes a template change reviewable as a diff |
 | `test_templates_cover.py` | `covers(spec)` accepts every spec the gate can produce and rejects a spec carrying a field or value it does not handle; the predicate is never allowed to claim coverage it lacks |
 | `test_codegen_paths.py` | the template path renders and passes the harness with **no model call at all** (assert the model is never invoked); a spec `covers()` rejects goes straight to the LLM path; a **harness failure on rendered code falls through** rather than retrying, and the result records `fell_back_from_template` with a reason |
 | `test_codegen_target_types.py` (marked slow) | the **fallback** loop against three fixture CSVs (binary / multiclass / regression), asserting the harness passes and `PRIMARY_METRIC` matches the spec. Measures iterations-to-pass, which is the D6 regression guard |
@@ -1065,7 +1085,7 @@ what the hub serves, not a tool.
 | **Generation quality drops without the worked example** (D6) | **Largely resolved by D13.** The declared case never reaches a model at all, and the fallback path regains a worked example — the template rendered against a fixture spec (§7.5), which is a better example than the one removed because it covers exactly the three target types the fallback will be asked to write. What remains: the residual failure is retries, not wrong code (the harness catches everything; nothing wrong lands), each retry costing ~2 model calls plus a harness run of up to 600 s. `test_codegen_target_types.py` measures iterations-to-pass on the fallback path |
 | **The template silently covers a spec it should not** | `covers()` is whitelist-shaped — it accepts known fields with in-range values and rejects everything else — and `test_templates_cover.py` guards it. The backstop is that rendered code faces the identical harness and review as generated code (D15), so a bad fit fails verification and falls through rather than landing |
 | **A template fix does not reach already-landed tasks** | Deliberate: landed code is the user's. Made *visible* rather than silent by the version stamp in every rendered file and a `doctor` check listing tasks rendered from a superseded version |
-| **Template conditionals sprawl** | Three target types × two split modes is the declared ceiling. A fourth axis is the signal to revisit the mechanism, not to nest further — stated in §7.3 so the decision is made deliberately rather than by accretion |
+| **Template conditionals sprawl** | Three target types × three split modes is the declared ceiling. A third axis is the signal to revisit the mechanism, not to nest further — stated in §7.3 so the decision is made deliberately rather than by accretion |
 | **The same drop on flow E** (D2/§1.1) | Identical mechanism, cheaper: `_verify_wrapper` runs in process rather than in the sandbox, so a failed attempt costs a model call and a `load_spec`, not a 600 s subprocess. `contract.py` goes into the prompt in full and is a typed specification, not prose. Add the wrapper case to the same measurement test |
 | **A human override produces a bad run and the result is read as recommended** | `human_overrides` on the plan, the job record and the analysis report; the gate re-renders and re-asks after an edit |
 | **A mis-detected label column produces a plausible wrong model** | This is what gate 1 exists for; the gate shows class counts and row counts from the real file, not ratios |

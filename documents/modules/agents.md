@@ -206,10 +206,15 @@ EDITABLE_ARGS = {
     "confirm_data_profile": ("spec.sequence_column", "spec.label_column",
                               "spec.target_type", "spec.task_name",
                               "spec.tool_description", "spec.positive_class",
-                              "spec.on_invalid", "spec.split.*"),
+                              "spec.on_invalid", "spec.split.*",
+                              "spec.format.header", "spec.format.separator"),
     "start_training":       ("plan.overrides.*", "plan.seed", "plan.arm", "plan.quick_run"),
 }
 ```
+
+`spec.split.*` covers a new field the same way it always covered `fractions`/`column`/
+`mapping` — `spec.split.validation_path` needed no change here, since `_get_path`/
+`_set_path` are generic dotted-path walkers with no field enumerated by name.
 
 `land_generated_code` is deliberately absent — editing generated code at the gate would mean
 landing code the harness never actually verified against that edited form, which is exactly

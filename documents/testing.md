@@ -3,8 +3,8 @@
 Strategy, how to run each suite, and what every test file actually guards.
 
 Measured in this checkout: **engine 135 passed / 7 deselected** (2026-08-13, unchanged by
-Phase 13 — `engine/` is untouched, D1), **agentic 611 tests** collected
-(`pytest tests/ --collect-only`, 2026-08-18), up from 381 before Phase 13.
+Phase 13 — `engine/` is untouched, D1), **agentic 633 tests** collected
+(`pytest tests/ --collect-only`, 2026-08-19), up from 381 before Phase 13.
 
 ---
 
@@ -204,8 +204,8 @@ SSE collection helpers, so HTTP tests can assert on frame sequences.
 
 | File | Guards |
 |---|---|
-| `test_profiler.py` | The one-table reader — column/target-type detection, split-column detection, the quality/leakage warnings, `similar_tasks` — synthetic fixtures, deterministic, no engine, no real datasets. No layout matching: there is nothing left to match against |
-| `test_dataset_spec.py` | `DatasetSpec` validation: bad fractions, an unknown column, an unsupported target type, a `task_name` collision, mode switching, and that `confirm_data_profile`'s approval recomputes `row_counts`/`classes`/`head` from the file rather than trusting the proposal |
+| `test_profiler.py` | The one-table reader — column/target-type detection, delimiter sniffing, headerless-file detection, split-column detection, `mode: "file"` proposal from a `validation_path`, the quality/leakage warnings, `similar_tasks` — synthetic fixtures, deterministic, no engine, no real datasets. No layout matching: there is nothing left to match against |
+| `test_dataset_spec.py` | `DatasetSpec` validation: bad fractions, an unknown column, an unsupported target type, a `task_name` collision, mode switching (including into/out of `file` mode), an edited `format.header`/`format.separator` taking effect on re-validation, and that `confirm_data_profile`'s approval recomputes `row_counts`/`classes`/`head` from the file rather than trusting the proposal |
 | `test_profile_gate.py` | `confirm_data_profile` refuses a spec that is not stamped `source: "profile_dataset"`; the interrupt fires before any spec is (re-)stamped; a decline leaves nothing behind |
 | `test_approval_edits.py` | `_apply_edits`: whitelist (`EDITABLE_ARGS`) enforcement, type checking, unknown-path refusal; an edited training plan rebuilds `command`; `human_edits`/`human_overrides` recorded; a recorded failure mode produces its warning when the human's chosen value matches one |
 | `test_recommender.py` | Spec-driven, table-driven, no free-floating constants, and **the command it materialises parses under the engine's own CLI parser** — no `layout_match`, `data.root` is the CSV's own file path |
@@ -222,7 +222,7 @@ SSE collection helpers, so HTTP tests can assert on frame sequences.
 | File | Guards |
 |---|---|
 | `test_harness.py` | **Controls and catches** — see below |
-| `test_templates_render.py` | Golden-file tests: each of the three target types × two split modes renders byte-for-byte expected output from `codegen/templates/`. Cheap, fast, no model — what makes a template change reviewable as a diff (`scripts/update_template_golden.py` regenerates the goldens) |
+| `test_templates_render.py` | Golden-file tests: each of the three target types × two split modes, plus one `file`-mode and one headerless case, renders byte-for-byte expected output from `codegen/templates/`. Cheap, fast, no model — what makes a template change reviewable as a diff (`scripts/update_template_golden.py` regenerates the goldens) |
 | `test_templates_cover.py` | `covers(spec)` accepts every spec gate 1 can produce and rejects a spec carrying a field or value the template does not declare it handles — the predicate is never allowed to claim coverage it lacks |
 | `test_codegen_paths.py` | The template path renders and passes the harness with **no model call at all** (asserts the model is never invoked); a spec `covers()` rejects goes straight to the LLM path; a harness failure on rendered code **falls through** rather than retrying, recording `fell_back_from_template` with a reason |
 | `test_runtime_validators.py` | Serving validators keyed by `target_type` (probabilities in [0,1]; a recorded class label; one finite float), not by task name — every generated task gets coverage now, not just the ones with a hand-written entry |

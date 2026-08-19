@@ -179,6 +179,36 @@ def test_create_task_tool_renders_an_approved_spec_via_the_template(tools, tmp_p
     }
 
 
+def test_file_mode_spec_renders_via_the_template_through_the_real_tools(tools, tmp_path):
+    """The full cold-start round trip for a two-file dataset, through the real
+    profile_dataset/confirm_data_profile/create_task_tool LangChain wrappers -- not just
+    the underlying Python functions."""
+    # Not named "train.csv" / "val.csv": _default_task_name derives the task name from
+    # the filename, and "train" collides with nn.Module's own .train() attribute during
+    # serving -- a pre-existing landmine unrelated to split.mode, sidestepped here rather
+    # than fixed (out of scope for this change).
+    train_path = tmp_path / "main_data.csv"
+    val_path = tmp_path / "val_data.csv"
+    train_path.write_text(
+        "\n".join(["sequence,label"] + [f"{'ACGU' * 10},{i % 2}" for i in range(40)]) + "\n"
+    )
+    val_path.write_text(
+        "\n".join(["sequence,label"] + [f"{'ACGC' * 10},{i % 2}" for i in range(10)]) + "\n"
+    )
+
+    proposed = tools["profile_dataset"].invoke(
+        {"path": str(train_path), "validation_path": str(val_path)}
+    )
+    assert proposed["split"]["mode"] == "file"
+
+    spec = tools["confirm_data_profile"].invoke({"spec": proposed})
+
+    result = tools["create_task_tool"].invoke({"spec": spec})
+
+    assert result["ok"] is True, result
+    assert result["path"] == "template"
+
+
 def test_approval_payload_shows_the_files_and_the_staging_path(tmp_path):
     from adaptrna_agentic.agents.orchestrator import _details, _summarize
     from adaptrna_agentic.agents.tool_factory import _STAGES

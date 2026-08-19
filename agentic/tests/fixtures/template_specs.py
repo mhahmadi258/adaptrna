@@ -18,6 +18,13 @@ COLUMN_SPLIT = {
     "mapping": {"train": ["human", "mouse"], "val": ["fly"], "test": ["zebrafish"]},
 }
 
+FILE_SPLIT = {
+    "mode": "file",
+    "validation_path": "/home/user/data/example_val.csv",
+    "test_fraction": 0.0,
+    "fractions": None, "seed": None, "stratify": None, "column": None, "mapping": None,
+}
+
 _BASE = {
     "sequence_column": "sequence",
     "label_column": "label",
@@ -25,9 +32,16 @@ _BASE = {
     "format": {"separator": ",", "compression": None},
 }
 
+_HEADERLESS_BASE = {
+    "sequence_column": "0",
+    "label_column": "1",
+    "path": "/home/user/data/example.csv",
+    "format": {"separator": ",", "compression": None, "header": False},
+}
 
-def _spec(target_type, split, classes, metric, task_name, positive_class=None):
-    spec = dict(_BASE)
+
+def _spec(target_type, split, classes, metric, task_name, positive_class=None, base=None):
+    spec = dict(base or _BASE)
     spec["target_type"] = target_type
     spec["classes"] = classes
     spec["head"] = {"primary_metric": metric}
@@ -57,4 +71,11 @@ TEMPLATE_SPECS = {
     ),
     "regression_random": _spec("regression", RANDOM_SPLIT, None, "test/mse", "regression_random"),
     "regression_column": _spec("regression", COLUMN_SPLIT, None, "test/mse", "regression_column"),
+    "binary_file": _spec(
+        "binary", FILE_SPLIT, ["0", "1"], "test/f1_score", "binary_file", positive_class="0"
+    ),
+    "binary_headerless": _spec(
+        "binary", RANDOM_SPLIT, ["0", "1"], "test/f1_score", "binary_headerless",
+        positive_class="0", base=_HEADERLESS_BASE,
+    ),
 }

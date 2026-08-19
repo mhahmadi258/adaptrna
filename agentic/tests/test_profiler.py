@@ -29,7 +29,7 @@ def test_profile_is_stamped_and_versioned(tmp_path):
     spec = profile_dataset(path)
 
     assert spec["source"] == PROFILE_SOURCE
-    assert spec["spec_version"] == 1
+    assert spec["spec_version"] == 2
     assert spec["path"] == str(path.resolve())
 
 
@@ -80,6 +80,59 @@ def test_gzipped_csv_is_accepted(tmp_path):
     assert spec["format"]["compression"] == "gzip"
     assert spec["target_type"] == "binary"
 
+
+def test_headerless_csv_is_detected_and_warned(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = [f"{_sequence(32)},{i % 2}" for i in range(40)]  # no header row at all
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["format"]["header"] is False
+    assert spec["sequence_column"] == "0"
+    assert spec["label_column"] == "1"
+    assert spec["target_type"] == "binary"
+    assert any("No header row detected" in w for w in spec["warnings"])
+
+
+def test_a_normal_header_is_not_flagged_as_missing(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("\n".join(_binary_rows()) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["format"]["header"] is True
+    assert not any("No header row detected" in w for w in spec["warnings"])
+
+
+def test_semicolon_delimiter_is_sniffed(tmp_path):
+    path = tmp_path / "data.csv"
+    rows = ["sequence;label"] + [f"{_sequence(32)};{i % 2}" for i in range(40)]
+    path.write_text("\n".join(rows) + "\n")
+
+    spec = profile_dataset(path)
+
+    assert spec["format"]["separator"] == ";"
+    assert spec["target_type"] == "binary"
+
+
+def test_sniffing_never_reads_more_than_a_few_lines(tmp_path):
+    """Delimiter sniffing must stay cheap on a huge file. The first 10 lines are
+    well-formed and semicolon-delimited; everything after is one massive undelimited
+    line -- if the sniffer ever pulled it into its sample, `csv.Sniffer` would find no
+    consistent delimiter and this would fall back to ',' instead of ';', so a wrong
+    result here is a real correctness signal, not just a timing one."""
+    from adaptrna_agentic.profiling.profiler import _sniff_separator
+
+    path = tmp_path / "huge.csv"
+    lines = [f"{_sequence(32)};{i % 2}" for i in range(10)]
+    lines.append("X" * 2_000_000)
+    path.write_text("\n".join(lines) + "\n")
+
+    assert _sniff_separator(path, compression=None) == ";"
+
+
+# ---------------------------------------------------------------------- multiclass etc.
 
 def test_multiclass_detected(tmp_path):
     path = tmp_path / "data.csv"
@@ -165,6 +218,51 @@ def test_a_split_name_column_is_proposed_as_column_mode(tmp_path):
     assert spec["split"]["row_counts"]["train"] == 30
     assert spec["split"]["row_counts"]["test"] == 10
     assert "fold" in spec["split_candidates"]
+
+
+def test_validation_path_is_proposed_as_file_mode(tmp_path):
+    train_path = tmp_path / "train.csv"
+    val_path = tmp_path / "val.csv"
+    train_path.write_text("\n".join(_binary_rows(n=40)) + "\n")
+    val_path.write_text("\n".join(_binary_rows(n=10)) + "\n")
+
+    spec = profile_dataset(train_path, validation_path=val_path)
+
+    assert spec["split"]["mode"] == "file"
+    assert spec["split"]["validation_path"] == str(val_path.resolve())
+    assert spec["split"]["test_fraction"] == 0.0
+    assert spec["split"]["row_counts"] == {"train": 40, "val": 10, "test": 0}
+    assert spec["split"]["dropped_rows"] == 0
+
+
+def test_file_mode_cross_file_leakage_is_warned(tmp_path):
+    shared = _sequence(32)
+    train_path = tmp_path / "train.csv"
+    val_path = tmp_path / "val.csv"
+    train_path.write_text("\n".join(["sequence,label", f"{shared},0"] + _binary_rows(n=39)[1:]) + "\n")
+    val_path.write_text("\n".join(["sequence,label", f"{shared},1"] + _binary_rows(n=9)[1:]) + "\n")
+
+    spec = profile_dataset(train_path, validation_path=val_path)
+
+    assert any("train and val" in w for w in spec["warnings"])
+
+
+def test_validation_path_missing_file_is_refused(tmp_path):
+    train_path = tmp_path / "train.csv"
+    train_path.write_text("\n".join(_binary_rows()) + "\n")
+
+    with pytest.raises(ToolHubError, match="does not exist"):
+        profile_dataset(train_path, validation_path=tmp_path / "nowhere.csv")
+
+
+def test_validation_path_missing_columns_is_refused(tmp_path):
+    train_path = tmp_path / "train.csv"
+    val_path = tmp_path / "val.csv"
+    train_path.write_text("\n".join(_binary_rows()) + "\n")
+    val_path.write_text("not_sequence,not_label\nACGU,0\n")
+
+    with pytest.raises(ToolHubError, match="must have the same columns"):
+        profile_dataset(train_path, validation_path=val_path)
 
 
 # ---------------------------------------------------------------------- quality checks

@@ -1,4 +1,4 @@
-# rendered by adaptrna template v2 from spec.json
+# rendered by adaptrna template v3 from spec.json
 """binary target from a flat sequence/label table"""
 
 import torch
@@ -104,6 +104,7 @@ class BinaryColumnModule(BaseDownstreamModule):
         data = cfg["data"]
         return CsvDataModule(
             data_root=data["root"],
+            val_root=data.get("val_root"),
             alphabet=Alphabet(),
             batch_size=data.get("batch_size", 32),
             num_workers=data.get("num_workers", 0),

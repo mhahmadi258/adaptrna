@@ -1,5 +1,5 @@
 # rendered by adaptrna template v3 from spec.json
-"""CSV/TSV datamodule for 'multiclass_random', rendered from the approved dataset spec.
+"""CSV/TSV datamodule for 'binary_headerless', rendered from the approved dataset spec.
 
 Reads exactly the sequence and label columns approved at gate 1, from whatever path
 `data.root` in the config names -- so pointing this task at a new file of the same shape
@@ -15,20 +15,21 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-SEQUENCE_COLUMN = "sequence"
-LABEL_COLUMN = "label"
+SEQUENCE_COLUMN = "0"
+LABEL_COLUMN = "1"
 SEPARATOR = ','
 COMPRESSION = None
 ON_INVALID = 'fail'
-CLASSES = ['0', '1', '2']
-CLASS_INDEX = {value: index for index, value in enumerate(CLASSES)}
+CLASSES = ['0', '1']
+POSITIVE_CLASS = '0'
 KEEP_COLUMNS = [SEQUENCE_COLUMN, LABEL_COLUMN]
 
 _VALID_SEQUENCE = re.compile(r"^[ACGTUNacgtun]+$")
 
 
 def _read_frame(path):
-    frame = pd.read_csv(path, sep=SEPARATOR, compression=COMPRESSION)
+    frame = pd.read_csv(path, sep=SEPARATOR, compression=COMPRESSION, header=None)
+    frame.columns = [str(c) for c in frame.columns]
     frame = frame[KEEP_COLUMNS].dropna()
     frame[SEQUENCE_COLUMN] = frame[SEQUENCE_COLUMN].astype(str)
 
@@ -115,9 +116,9 @@ class SequenceDataset(Dataset):
             self.alphabet.encode(row[SEQUENCE_COLUMN]), dtype=torch.long
         )
         value = str(row[LABEL_COLUMN])
-        if value not in CLASS_INDEX:
+        if value not in CLASSES:
             raise ValueError(f"label value {value!r} is not one of the approved classes {CLASSES}")
-        label = torch.tensor(CLASS_INDEX[value], dtype=torch.long)
+        label = torch.tensor(1.0 if value == POSITIVE_CLASS else 0.0, dtype=torch.float32)
         return tokens, label
 
 

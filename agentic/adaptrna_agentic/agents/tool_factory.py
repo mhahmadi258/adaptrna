@@ -72,7 +72,7 @@ EDITABLE_ARGS = {
     "confirm_data_profile": (
         "spec.sequence_column", "spec.label_column", "spec.target_type",
         "spec.task_name", "spec.tool_description", "spec.positive_class",
-        "spec.on_invalid", "spec.split.*",
+        "spec.on_invalid", "spec.split.*", "spec.format.header", "spec.format.separator",
     ),
     "start_training": (
         "plan.overrides.*", "plan.seed", "plan.arm", "plan.quick_run",
@@ -189,16 +189,18 @@ def _pipeline_tools(registry: Registry, runtime: AdapterRuntime) -> List[BaseToo
 
     job_runner = JobRunner()
 
-    def profile_dataset(path: str) -> dict:
+    def profile_dataset(path: str, validation_path: Optional[str] = None) -> dict:
         """Profile one CSV/TSV table (optionally gzipped) and propose a dataset spec.
 
         Accepts exactly one delimited file with a sequence column and a label column;
         refuses a directory, a FASTA file, or a label column this build cannot train on
-        (only binary, multiclass and regression targets are supported). Pass the result
-        to confirm_data_profile for the user's approval — nothing is generated or
-        trained from this call alone.
+        (only binary, multiclass and regression targets are supported). If the user's
+        validation rows live in a second, separate file rather than a column of this one,
+        pass its path as validation_path — the spec proposes a file-based split instead of
+        a random or column-based one. Pass the result to confirm_data_profile for the
+        user's approval — nothing is generated or trained from this call alone.
         """
-        return _profile_dataset(path)
+        return _profile_dataset(path, validation_path=validation_path)
 
     def confirm_data_profile(spec: dict) -> dict:
         """Put the profiler's interpretation of a dataset to the user for approval.

@@ -15,6 +15,7 @@ them.
 | [Gate a new action behind approval](#gate-a-new-action-behind-approval) | `GATED_TOOLS`, `_summarize`, `_details` | `cli/chat.py::_prompt_approval`, `ui/render.js`, `test_ui_contract.py` |
 | [Change a hyperparameter recommendation](#change-a-hyperparameter-recommendation) | `knowledge/hyperparameters.yaml` | `test_knowledge.py` |
 | [Add a target shape](#add-a-target-shape) | `knowledge/target_shapes.yaml`, `codegen/templates/` | `test_generic_recommender.py`, `test_templates_cover.py` |
+| [Add a split mode](#add-a-split-mode) | `profiling/profiler.py`, `codegen/templates/` | `test_profiler.py`, `test_dataset_spec.py`, `test_templates_cover.py`, bump `TEMPLATE_VERSION` |
 | [Add an HTTP endpoint](#add-an-http-endpoint) | `api/routers/<r>.py` | `api/schemas.py`, tests; `test_ui_contract.py` if the UI reads it |
 | [Add a UI panel](#add-a-ui-panel) | `ui/index.html`, `render.js`, `app.js` | `test_ui_contract.py` |
 | [Wrap a classical package](#wrap-a-classical-package) | a new module built against `external/contract.py` | register it; goldens |
@@ -242,8 +243,41 @@ have to agree on the same recipe:
 A **fourth** target shape (D7 currently refuses anything else, with a message naming what
 is supported) is a bigger decision than this recipe — it touches the profiler's
 target-type detection, the refusal message, and every one of the three points above. Read
-plan §7.3's note on conditional sprawl before adding one: three shapes × two split modes is
-the declared ceiling for branching inside one template file.
+plan §7.3's note on conditional sprawl before adding one: three shapes × three split modes
+is the declared ceiling for branching inside one template file.
+
+## Add a split mode
+
+`split.mode` has three values — `random`, `column`, `file` — each with its own shape of the
+same `DatasetSpec["split"]` dict (unused fields for a mode are `null`, not omitted, so
+readers can always check by key rather than by `.get()` with a default). Adding a fourth
+touches four independently-written places that all have to agree:
+
+1. **`profiling/profiler.py`**: a proposer (mirroring `_random_split`/`_column_split`/
+   `_file_split`) returning the shared dict shape; a branch in
+   `_validate_and_recompute_split` (an `elif`, not the catch-all `else` — the final `raise`
+   must still name every supported mode); and, if the new mode has its own quality checks,
+   a branch in `_quality_warnings`.
+2. **`codegen/templates/render.py`**: add the mode string to `SUPPORTED_SPLIT_MODES`, and an
+   explicit `elif mode == "<new>":` branch in `_check_covers` — never leave a bare `else` as
+   the last branch once there are three or more modes, or a spec in the new mode silently
+   gets validated against the *previous* last branch's rules instead of its own. Add
+   whatever the new mode needs to `_context()`.
+3. **The templates themselves** — `datamodule.py.j2`'s `_split`/`_validate_split` (a third
+   `{% elif %}`), `KEEP_COLUMNS` if the mode reads extra columns, `config.yaml.j2` if it
+   needs config fields beyond `data.root`, and `task.py.j2`'s `build_datamodule` if the
+   datamodule's constructor gains a parameter. Regenerate the golden files
+   (`python agentic/scripts/update_template_golden.py`), read the diff, and bump
+   `TEMPLATE_VERSION` — see [Change a codegen template](#change-a-codegen-template).
+4. **`agents/tool_factory.py`**: `EDITABLE_ARGS["confirm_data_profile"]`'s `"spec.split.*"`
+   wildcard already covers any new field under `spec.split` — nothing to add there. If the
+   new mode needs its own top-level input to `profile_dataset` (the way `file` mode needed
+   `validation_path`), add it as a new optional parameter on both the profiler function and
+   its tool wrapper.
+5. Add cases to `test_profiler.py`/`test_dataset_spec.py` (proposal and gate-time
+   validation) and `test_templates_render.py`/`test_templates_cover.py` (one golden case is
+   enough — see the note in [modules/codegen.md §2](modules/codegen.md#2-codegentemplates--the-deterministic-path)
+   on why this isn't a full cross product with every target type).
 
 ## Add an HTTP endpoint
 

@@ -1,11 +1,12 @@
 # rendered by adaptrna template v3 from spec.json
-task: regression_column
+task: binary_file
 
 head:
   hidden_dim: 32
 
 data:
   root: "/home/user/data/example.csv"
+  val_root: "/home/user/data/example_val.csv"
   batch_size: 32
   num_workers: 0
 

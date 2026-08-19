@@ -38,7 +38,12 @@ _VALID_SEQUENCE = re.compile(r"^[ACGTUNacgtun]+$")
 
 
 def _read_frame(path):
+{% if has_header %}
     frame = pd.read_csv(path, sep=SEPARATOR, compression=COMPRESSION)
+{% else %}
+    frame = pd.read_csv(path, sep=SEPARATOR, compression=COMPRESSION, header=None)
+    frame.columns = [str(c) for c in frame.columns]
+{% endif %}
     frame = frame[KEEP_COLUMNS].dropna()
     frame[SEQUENCE_COLUMN] = frame[SEQUENCE_COLUMN].astype(str)
 
@@ -108,7 +113,7 @@ def _validate_split(train_frame, val_frame, test_frame):
             f"{fractions} (seed {{ split_seed }}) -- there is not enough data for this "
             f"split policy."
         )
-{% else %}
+{% elif split_mode == "column" %}
 def _split(frame):
     column = "{{ split_column }}"
     mapping = {{ split_mapping | pyrepr }}
@@ -131,6 +136,25 @@ def _validate_split(train_frame, val_frame, test_frame):
             f"the {', '.join(empty)} split is empty after applying the column split "
             f"mapping {mapping} on column '{column}' -- check that the mapping's values "
             f"actually appear in the data (a typo produces this silently otherwise)."
+        )
+{% else %}
+def _split(frame, val_frame):
+    # split.mode == "file": validation is the whole second file, as given -- no
+    # re-shuffling, no carve-out. Test stays empty (test_fraction is always 0 today).
+    return frame, val_frame, frame.iloc[0:0]
+
+
+def _validate_split(train_frame, val_frame, test_frame):
+    empty = []
+    if len(train_frame) == 0:
+        empty.append("train")
+    if len(val_frame) == 0:
+        empty.append("val")
+
+    if empty:
+        raise ValueError(
+            f"the {', '.join(empty)} split is empty -- check that the main file and "
+            f"split.validation_path both have usable rows after cleaning."
         )
 {% endif %}
 
@@ -167,9 +191,11 @@ class SequenceDataset(Dataset):
 
 
 class CsvDataModule(pl.LightningDataModule):
-    def __init__(self, data_root, alphabet, batch_size=32, num_workers=0, pin_memory=False):
+    def __init__(self, data_root, alphabet, val_root=None, batch_size=32, num_workers=0,
+                 pin_memory=False):
         super().__init__()
         self.data_root = data_root
+        self.val_root = val_root
         self.alphabet = alphabet
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -177,7 +203,12 @@ class CsvDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         frame = _read_frame(self.data_root)
+{% if split_mode == "file" %}
+        val_frame = _read_frame(self.val_root)
+        train_frame, val_frame, test_frame = _split(frame, val_frame)
+{% else %}
         train_frame, val_frame, test_frame = _split(frame)
+{% endif %}
         _validate_split(train_frame, val_frame, test_frame)
 
         self.train_dataset = SequenceDataset(train_frame, self.alphabet)

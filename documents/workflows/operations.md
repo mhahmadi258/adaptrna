@@ -39,7 +39,7 @@ install status: WARN
   [ok  ] artifacts: 5 tool(s), all artifacts present
   [ok  ] external_tools: 2 external tool(s) importable
   [ok  ] custom_tasks: 1 generated task(s) import cleanly
-  [ok  ] template_version: current template version: v2
+  [ok  ] template_version: current template version: v3
   [ok  ] jobs: 6 job record(s), all consistent
   [WARN] staging: 2 staged artifact(s) never landed or cleaned (14 KB): [...]
            -> review with `list_staged_code`, then land it or `toolhub prune staging`

@@ -53,9 +53,10 @@ flowchart TD
 
 **The declared case is rendered, not generated.** `codegen/templates/render.py::covers(spec)`
 is a whitelist predicate over the approved spec — the target type is one of the three
-supported, the split mode is `random` or `column` with a coherent mapping, the separator is
-comma or tab, binary carries exactly two classes and a valid `positive_class`, every field
-the templates read is present and in range. When it holds, `codegen/templates/*.j2` render
+supported, the split mode is `random`, `column` with a coherent mapping, or `file` with a
+readable `validation_path`, the separator is comma or tab, binary carries exactly two
+classes and a valid `positive_class`, every field the templates read is present and in
+range. When it holds, `codegen/templates/*.j2` render
 `task.py`, `datamodule.py` and `config.yaml` **deterministically, with zero model calls** —
 the same spec always produces byte-identical code.
 

@@ -401,9 +401,12 @@ downstream re-derives it from the CSV a second time. Full walkthrough:
 
 ```jsonc
 {
-  "spec_version": 1,
+  "spec_version": 2,
   "source": "confirm_data_profile",          // "profile_dataset" until gate 1 approves it
   "path": "/abs/path/to/data.csv",
+  // separator: sniffed from the first ~10 lines for .csv, always tab for .tsv.
+  // header: assumed true; auto-retried as false if that reading can't find both columns,
+  // or finds them but the "column name" itself looks like a sequence value.
   "format": {"separator": ",", "compression": null, "rows": 24188, "header": true},
 
   "sequence_column": "sequence",
@@ -423,10 +426,12 @@ downstream re-derives it from the CSV a second time. Full walkthrough:
   "length": {"min": 400, "median": 400, "max": 400},
 
   "split": {
-    "mode": "random",                        // random | column
+    "mode": "random",                        // random | column | file
     "fractions": {"train": 0.8, "val": 0.1, "test": 0.1},
     "seed": 42, "stratify": true,
     "column": null, "mapping": null,
+    "validation_path": null,                 // mode=file: a second table; val is used whole
+    "test_fraction": 0.0,                    // mode=file: always 0 today, no carve-out
     "row_counts": {"train": 19350, "val": 2419, "test": 2419},
     "dropped_rows": 0
   },

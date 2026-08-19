@@ -24,7 +24,7 @@ PROFILE_SOURCE = "profile_dataset"
 #: skip the human gate.
 SPEC_SOURCE = "confirm_data_profile"
 
-SPEC_VERSION = 1
+SPEC_VERSION = 2
 
 #: Column names that usually hold the sequence / the label.
 _SEQUENCE_HINTS = ("seq", "sequence", "utr", "rna", "dna")
@@ -148,7 +148,9 @@ _UNSUPPORTED_INPUT = (
 
 # =============================================================================== step 1
 
-def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
+def profile_dataset(
+    path: Union[str, Path], validation_path: Optional[Union[str, Path]] = None
+) -> Dict[str, Any]:
     """Profile one CSV/TSV table and propose a `DatasetSpec` for gate 1.
 
     Refuses a directory, a FASTA file, or anything whose label column is not binary,
@@ -156,6 +158,10 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
     what is supported and what was found instead. Nothing is generated or trained from
     this call; it is a read-only proposal for `confirm_data_profile` to put in front of
     the user.
+
+    If `validation_path` is given, its rows become the validation split (`split.mode ==
+    "file"`) instead of proposing a random or column-based split — for datasets that
+    already ship train/val as two separate files.
     """
     path = Path(path).expanduser()
     if not path.exists():
@@ -170,12 +176,37 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
             _UNSUPPORTED_INPUT.format(path=path, what=f"a '{path.suffix}' file")
         )
 
-    import pandas as pd
+    frame = _read_table(path, separator, compression, header=True)
+    header = True
+    sequence_column = _detect_sequence_column(frame)
+    label_column = (
+        _detect_label_column(frame, sequence_column) if sequence_column is not None else None
+    )
 
-    frame = pd.read_csv(path, sep=separator, compression=compression)
+    # A headerless file doesn't always make detection *fail* -- with enough rows, losing
+    # row 1 to a phantom header still leaves plenty of real data in the column, so
+    # content-sniffing succeeds anyway, just quietly on one row fewer. The stronger tell:
+    # the "column name" pandas assigned IS row 1's own value, so if that value itself
+    # looks like a sequence, row 1 was surely data, not a header naming it.
+    needs_retry = (
+        sequence_column is None or label_column is None
+        or (sequence_column is not None and _looks_like_a_sequence_value(sequence_column))
+    )
+
+    if needs_retry:
+        retry_frame = _read_table(path, separator, compression, header=False)
+        retry_sequence = _detect_sequence_column(retry_frame)
+        retry_label = (
+            _detect_label_column(retry_frame, retry_sequence)
+            if retry_sequence is not None else None
+        )
+        if retry_sequence is not None and retry_label is not None:
+            frame, sequence_column, label_column, header = (
+                retry_frame, retry_sequence, retry_label, False
+            )
+
     rows = int(len(frame))
 
-    sequence_column = _detect_sequence_column(frame)
     if sequence_column is None:
         raise ToolHubError(
             f"No column in '{path.name}' looks like a sequence (nucleotide strings of "
@@ -183,7 +214,6 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
             f"sequence column and one label column."
         )
 
-    label_column = _detect_label_column(frame, sequence_column)
     if label_column is None:
         raise ToolHubError(
             f"No usable label column found in '{path.name}' alongside sequence column "
@@ -206,8 +236,18 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
     ignored_columns = [
         str(c) for c in frame.columns if c not in (sequence_column, label_column)
     ]
-    split_candidates = _split_candidates(frame, sequence_column, label_column)
-    split = _propose_split(frame, label_column, target_type, split_candidates)
+
+    validation_frame = None
+    if validation_path is not None:
+        validation_path = Path(validation_path).expanduser()
+        validation_frame = _read_validation_file(
+            validation_path, separator, compression, header, sequence_column, label_column
+        )
+        split_candidates = {}
+        split = _file_split(frame, validation_frame, validation_path)
+    else:
+        split_candidates = _split_candidates(frame, sequence_column, label_column)
+        split = _propose_split(frame, label_column, target_type, split_candidates)
 
     spec: Dict[str, Any] = {
         "spec_version": SPEC_VERSION,
@@ -215,7 +255,7 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
         "path": str(path.resolve()),
         "format": {
             "separator": separator, "compression": compression,
-            "rows": rows, "header": True,
+            "rows": rows, "header": header,
         },
         "sequence_column": str(sequence_column),
         "label_column": str(label_column),
@@ -234,7 +274,18 @@ def profile_dataset(path: Union[str, Path]) -> Dict[str, Any]:
         "tool_description": _default_description(target_type, path),
         "head": _head_from_target_shape(target_type),
     }
-    spec["warnings"] = _quality_warnings(frame, sequence_column, sequences, class_counts, split)
+    spec["warnings"] = _quality_warnings(
+        frame, sequence_column, sequences, class_counts, split,
+        validation_sequences=(
+            validation_frame[sequence_column] if validation_frame is not None else None
+        ),
+    )
+    if not header:
+        spec["warnings"].append(
+            "No header row detected — row 1 is being treated as data; columns are "
+            "referenced positionally (0, 1, 2, ...). Correct spec.format.header at the "
+            "gate if this is wrong."
+        )
     spec["similar_tasks"] = _similar_tasks(spec)
 
     return spec
@@ -266,10 +317,9 @@ def confirm_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
     fmt = spec.get("format") or {}
     separator = fmt.get("separator", ",")
     compression = fmt.get("compression")
+    header = bool(fmt.get("header", True))
 
-    import pandas as pd
-
-    frame = pd.read_csv(path, sep=separator, compression=compression)
+    frame = _read_table(path, separator, compression, header)
 
     sequence_column = spec.get("sequence_column")
     label_column = spec.get("label_column")
@@ -317,7 +367,18 @@ def confirm_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
         )
     _reject_existing_task_name(task_name)
 
-    split = _validate_and_recompute_split(spec.get("split") or {}, frame, label_column)
+    split = _validate_and_recompute_split(
+        spec.get("split") or {}, frame, sequence_column, label_column,
+        separator, compression, header,
+    )
+
+    validation_sequences = None
+    if split["mode"] == "file":
+        validation_frame = _read_validation_file(
+            Path(split["validation_path"]), separator, compression, header,
+            sequence_column, label_column,
+        )
+        validation_sequences = validation_frame[sequence_column]
 
     spec.update({
         "source": SPEC_SOURCE,
@@ -335,7 +396,10 @@ def confirm_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
         "tool_description": spec.get("tool_description") or _default_description(target_type, path),
         "head": _head_from_target_shape(target_type),
     })
-    spec["warnings"] = _quality_warnings(frame, sequence_column, sequences, class_counts, split)
+    spec["warnings"] = _quality_warnings(
+        frame, sequence_column, sequences, class_counts, split,
+        validation_sequences=validation_sequences,
+    )
 
     return spec
 
@@ -354,7 +418,9 @@ def _reject_existing_task_name(task_name: str) -> None:
 
 def _format_of(path: Path) -> Tuple[Optional[str], Optional[str]]:
     """`(separator, compression)`, or `(None, None)` if this is not a table this build
-    reads (D8: only .csv/.tsv, optionally .gz)."""
+    reads (D8: only .csv/.tsv, optionally .gz). `.tsv` is always tab; `.csv`'s delimiter
+    is sniffed from the first few lines (`_sniff_separator`), since a `.csv` extension
+    alone doesn't guarantee a comma — semicolon-delimited exports under `.csv` are common."""
     suffixes = [s.lower() for s in path.suffixes]
 
     compression = None
@@ -365,20 +431,89 @@ def _format_of(path: Path) -> Tuple[Optional[str], Optional[str]]:
     if not suffixes or suffixes[-1] not in (".csv", ".tsv"):
         return None, None
 
-    return ("\t" if suffixes[-1] == ".tsv" else ","), compression
+    if suffixes[-1] == ".tsv":
+        return "\t", compression
+
+    return _sniff_separator(path, compression), compression
+
+
+#: `csv.Sniffer` only ever sees this many lines, and only for `.csv` files — profiling a
+#: multi-gigabyte dataset never reads more than a few KB to decide its delimiter.
+_SNIFF_LINES = 10
+_SNIFF_DELIMITERS = ",;\t|"
+
+
+def _sniff_separator(path: Path, compression: Optional[str]) -> str:
+    import csv
+    import gzip
+    import itertools
+
+    opener = gzip.open if compression == "gzip" else open
+    with opener(path, "rt", errors="replace") as handle:
+        sample = "".join(itertools.islice(handle, _SNIFF_LINES))
+
+    if not sample.strip():
+        return ","
+
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=_SNIFF_DELIMITERS).delimiter
+    except csv.Error:
+        return ","
+
+
+def _read_table(path: Path, separator: str, compression: Optional[str], header: bool):
+    """The one place a table is read from disk — `header=False` means row 1 is data, not
+    column names; columns are then string-labelled positionally ("0", "1", ...) to match
+    how `sequence_column`/`label_column` are always stored and referenced elsewhere."""
+    import pandas as pd
+
+    if header:
+        return pd.read_csv(path, sep=separator, compression=compression)
+
+    frame = pd.read_csv(path, sep=separator, compression=compression, header=None)
+    frame.columns = [str(c) for c in frame.columns]
+    return frame
+
+
+def _read_validation_file(
+    validation_path: Path, separator: str, compression: Optional[str], header: bool,
+    sequence_column, label_column,
+):
+    """Read a `split.mode == "file"` validation file with the main file's own format —
+    same separator, compression and header-ness — refusing loudly if it doesn't actually
+    have the two columns the approved spec names."""
+    if not validation_path.is_file():
+        raise ToolHubError(f"split.validation_path '{validation_path}' does not exist.")
+
+    frame = _read_table(validation_path, separator, compression, header)
+
+    if sequence_column not in frame.columns:
+        raise ToolHubError(
+            f"'{sequence_column}' is not a column in '{validation_path.name}' — the "
+            f"validation file must have the same columns as the main file."
+        )
+    if label_column not in frame.columns:
+        raise ToolHubError(
+            f"'{label_column}' is not a column in '{validation_path.name}' — the "
+            f"validation file must have the same columns as the main file."
+        )
+
+    return frame
 
 
 # =============================================================================== columns
+
+def _looks_like_a_sequence_value(value) -> bool:
+    text = str(value)
+    return len(text) >= 10 and set(text.upper()) <= _NUCLEOTIDES
+
 
 def _looks_like_sequences(series) -> bool:
     sample = series.dropna().astype(str).head(200)
     if sample.empty:
         return False
 
-    hits = sum(
-        1 for value in sample
-        if len(value) >= 10 and set(value.upper()) <= _NUCLEOTIDES
-    )
+    hits = sum(1 for value in sample if _looks_like_a_sequence_value(value))
     return hits / len(sample) >= _SEQUENCE_PURITY
 
 
@@ -582,7 +717,21 @@ def _column_split(frame, column, mapping):
     }
 
 
-def _validate_and_recompute_split(split, frame, label_column):
+def _file_split(frame, validation_frame, validation_path) -> Dict[str, Any]:
+    return {
+        "mode": "file", "validation_path": str(Path(validation_path).resolve()),
+        "test_fraction": 0.0,
+        "fractions": None, "seed": None, "stratify": None,
+        "column": None, "mapping": None,
+        "row_counts": {
+            "train": int(len(frame)), "val": int(len(validation_frame)), "test": 0,
+        },
+        "dropped_rows": 0,
+    }
+
+
+def _validate_and_recompute_split(split, frame, sequence_column, label_column,
+                                   separator, compression, header):
     mode = split.get("mode")
 
     if mode == "random":
@@ -620,12 +769,25 @@ def _validate_and_recompute_split(split, frame, label_column):
 
         return _column_split(frame, column, mapping)
 
-    raise ToolHubError(f"split.mode must be 'random' or 'column', got {mode!r}.")
+    if mode == "file":
+        validation_path = split.get("validation_path")
+        if not validation_path:
+            raise ToolHubError("split.validation_path is required for split.mode='file'.")
+
+        validation_frame = _read_validation_file(
+            Path(validation_path), separator, compression, header,
+            sequence_column, label_column,
+        )
+        return _file_split(frame, validation_frame, validation_path)
+
+    raise ToolHubError(f"split.mode must be 'random', 'column' or 'file', got {mode!r}.")
 
 
 # =============================================================================== warnings
 
-def _quality_warnings(frame, sequence_column, sequences, class_counts, split) -> List[str]:
+def _quality_warnings(
+    frame, sequence_column, sequences, class_counts, split, validation_sequences=None
+) -> List[str]:
     warnings: List[str] = []
 
     for warning in (
@@ -648,6 +810,13 @@ def _quality_warnings(frame, sequence_column, sequences, class_counts, split) ->
                 f"{split['dropped_rows']:,} row(s) do not match any value named in "
                 f"split.mapping and are dropped."
             )
+    elif split["mode"] == "file":
+        if validation_sequences is not None:
+            leakage = _overlap_warning({
+                "train": set(sequences), "val": set(validation_sequences),
+            })
+            if leakage:
+                warnings.append(leakage)
     elif split["fractions"] and split["fractions"].get("test", 0) == 0:
         warnings.append(
             "test fraction is 0 — there is no held-out number for this run; the primary "
@@ -672,14 +841,10 @@ def _duplicate_warning(sequences) -> Optional[str]:
     )
 
 
-def _leakage_warning(frame, sequence_column, column, mapping) -> Optional[str]:
+def _overlap_warning(groups: Dict[str, set]) -> Optional[str]:
+    """Shared by the column-split leakage check and the file-mode cross-file check: named
+    groups of sequences, reported wherever two of them share a sequence."""
     import itertools
-
-    groups = {}
-    for split_name, values in mapping.items():
-        wanted = {str(v) for v in values}
-        subset = frame[frame[column].astype(str).isin(wanted)]
-        groups[split_name] = set(subset[sequence_column])
 
     overlaps = []
     for a, b in itertools.combinations(sorted(groups), 2):
@@ -690,6 +855,16 @@ def _leakage_warning(frame, sequence_column, column, mapping) -> Optional[str]:
     if not overlaps:
         return None
     return "; ".join(overlaps) + "."
+
+
+def _leakage_warning(frame, sequence_column, column, mapping) -> Optional[str]:
+    groups = {}
+    for split_name, values in mapping.items():
+        wanted = {str(v) for v in values}
+        subset = frame[frame[column].astype(str).isin(wanted)]
+        groups[split_name] = set(subset[sequence_column])
+
+    return _overlap_warning(groups)
 
 
 def _imbalance_warning(class_counts) -> Optional[str]:

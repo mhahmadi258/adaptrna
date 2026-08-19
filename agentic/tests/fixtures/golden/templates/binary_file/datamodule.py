@@ -1,5 +1,5 @@
 # rendered by adaptrna template v3 from spec.json
-"""CSV/TSV datamodule for 'multiclass_random', rendered from the approved dataset spec.
+"""CSV/TSV datamodule for 'binary_file', rendered from the approved dataset spec.
 
 Reads exactly the sequence and label columns approved at gate 1, from whatever path
 `data.root` in the config names -- so pointing this task at a new file of the same shape
@@ -20,8 +20,8 @@ LABEL_COLUMN = "label"
 SEPARATOR = ','
 COMPRESSION = None
 ON_INVALID = 'fail'
-CLASSES = ['0', '1', '2']
-CLASS_INDEX = {value: index for index, value in enumerate(CLASSES)}
+CLASSES = ['0', '1']
+POSITIVE_CLASS = '0'
 KEEP_COLUMNS = [SEQUENCE_COLUMN, LABEL_COLUMN]
 
 _VALID_SEQUENCE = re.compile(r"^[ACGTUNacgtun]+$")
@@ -47,55 +47,23 @@ def _read_frame(path):
     return frame.reset_index(drop=True)
 
 
-def _split(frame):
-    from sklearn.model_selection import train_test_split
-
-    fractions = {'train': 0.8, 'val': 0.1, 'test': 0.1}
-    seed = 42
-    stratify = True
-
-    train_frac = fractions["train"]
-    val_frac = fractions["val"]
-    test_frac = fractions["test"]
-    rest_frac = val_frac + test_frac
-
-    if rest_frac <= 0:
-        empty = frame.iloc[0:0]
-        return frame, empty, empty
-
-    train_frame, rest_frame = train_test_split(
-        frame, test_size=rest_frac, random_state=seed,
-        stratify=frame[LABEL_COLUMN] if stratify else None,
-    )
-
-    if test_frac <= 0:
-        return train_frame, rest_frame, rest_frame.iloc[0:0]
-    if val_frac <= 0:
-        return train_frame, rest_frame.iloc[0:0], rest_frame
-
-    val_frame, test_frame = train_test_split(
-        rest_frame, test_size=test_frac / rest_frac, random_state=seed,
-        stratify=rest_frame[LABEL_COLUMN] if stratify else None,
-    )
-    return train_frame, val_frame, test_frame
+def _split(frame, val_frame):
+    # split.mode == "file": validation is the whole second file, as given -- no
+    # re-shuffling, no carve-out. Test stays empty (test_fraction is always 0 today).
+    return frame, val_frame, frame.iloc[0:0]
 
 
 def _validate_split(train_frame, val_frame, test_frame):
-    fractions = {'train': 0.8, 'val': 0.1, 'test': 0.1}
-
     empty = []
     if len(train_frame) == 0:
         empty.append("train")
-    if fractions["val"] > 0 and len(val_frame) == 0:
+    if len(val_frame) == 0:
         empty.append("val")
-    if fractions["test"] > 0 and len(test_frame) == 0:
-        empty.append("test")
 
     if empty:
         raise ValueError(
-            f"the {', '.join(empty)} split is empty after splitting with fractions "
-            f"{fractions} (seed 42) -- there is not enough data for this "
-            f"split policy."
+            f"the {', '.join(empty)} split is empty -- check that the main file and "
+            f"split.validation_path both have usable rows after cleaning."
         )
 
 
@@ -115,9 +83,9 @@ class SequenceDataset(Dataset):
             self.alphabet.encode(row[SEQUENCE_COLUMN]), dtype=torch.long
         )
         value = str(row[LABEL_COLUMN])
-        if value not in CLASS_INDEX:
+        if value not in CLASSES:
             raise ValueError(f"label value {value!r} is not one of the approved classes {CLASSES}")
-        label = torch.tensor(CLASS_INDEX[value], dtype=torch.long)
+        label = torch.tensor(1.0 if value == POSITIVE_CLASS else 0.0, dtype=torch.float32)
         return tokens, label
 
 
@@ -134,7 +102,8 @@ class CsvDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         frame = _read_frame(self.data_root)
-        train_frame, val_frame, test_frame = _split(frame)
+        val_frame = _read_frame(self.val_root)
+        train_frame, val_frame, test_frame = _split(frame, val_frame)
         _validate_split(train_frame, val_frame, test_frame)
 
         self.train_dataset = SequenceDataset(train_frame, self.alphabet)
