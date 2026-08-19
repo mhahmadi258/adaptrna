@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+from torchmetrics import MetricCollection
 from torchmetrics.classification import MulticlassAccuracy, MulticlassF1Score
 
 from rinalmo.data.alphabet import Alphabet
@@ -32,7 +33,7 @@ class MulticlassColumnModule(BaseDownstreamModule):
         if stage == "train":
             return None
 
-        return nn.ModuleDict({
+        return MetricCollection({
             "acc": MulticlassAccuracy(num_classes=NUM_CLASSES),
             "macro_f1": MulticlassF1Score(num_classes=NUM_CLASSES, average="macro"),
         })

@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+from torchmetrics import MetricCollection
 import torch.nn.functional as F
 from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
 
@@ -77,7 +78,7 @@ class RegressionRandomModule(BaseDownstreamModule):
         if stage == "train":
             return None
 
-        return nn.ModuleDict({
+        return MetricCollection({
             "mse": MeanSquaredError(), "mae": MeanAbsoluteError(), "r2": R2Score(),
         })
 

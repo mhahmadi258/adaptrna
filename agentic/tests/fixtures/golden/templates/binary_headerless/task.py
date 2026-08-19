@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+from torchmetrics import MetricCollection
 from torchmetrics.classification import (
     BinaryAccuracy, BinaryF1Score, BinaryPrecision, BinaryRecall,
 )
@@ -38,7 +39,7 @@ class BinaryHeaderlessModule(BaseDownstreamModule):
         if stage == "train":
             return None
 
-        return nn.ModuleDict({
+        return MetricCollection({
             "acc": BinaryAccuracy(), "precision": BinaryPrecision(),
             "recall": BinaryRecall(), "f1_score": BinaryF1Score(),
         })

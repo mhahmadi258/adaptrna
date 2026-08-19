@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+from torchmetrics import MetricCollection
 {% if target_type == "regression" %}
 import torch.nn.functional as F
 from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
@@ -119,16 +120,16 @@ class {{ class_name }}(BaseDownstreamModule):
             return None
 
 {% if target_type == "regression" %}
-        return nn.ModuleDict({
+        return MetricCollection({
             "mse": MeanSquaredError(), "mae": MeanAbsoluteError(), "r2": R2Score(),
         })
 {% elif target_type == "multiclass" %}
-        return nn.ModuleDict({
+        return MetricCollection({
             "acc": MulticlassAccuracy(num_classes=NUM_CLASSES),
             "macro_f1": MulticlassF1Score(num_classes=NUM_CLASSES, average="macro"),
         })
 {% else %}
-        return nn.ModuleDict({
+        return MetricCollection({
             "acc": BinaryAccuracy(), "precision": BinaryPrecision(),
             "recall": BinaryRecall(), "f1_score": BinaryF1Score(),
         })
