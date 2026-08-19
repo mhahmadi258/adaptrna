@@ -1,145 +1,286 @@
-# AdaptRNA
+# AdaptRNA: An Extensible RNA Foundation Model Agent with Adapters as Tools
 
-A conversational agent platform for RNA analysis, built on a task-pluggable fine-tuning
-engine. It ships with **no tools and no task definitions** — you bring one CSV or TSV with
-a sequence column and a label column, and it walks that file through four approved steps to
-a servable tool. Ask for a prediction afterwards and it activates the right adapter on one
-shared backbone.
+This repository implements the system described in:
+
+**"AdaptRNA: An Extensible RNA Foundation Model Agent with Adapters as Tools."**
+(Authors: Ahmadi, Beheshti — School of Computing, Macquarie University)
+
+---
+
+## 🎥 Demo Video
+[Watch the Demo](#) <!-- replace with the demo URL -->
+
+---
+
+## Table of Contents
+- [Overview](#overview)
+- [Demo](#-demo-video)
+- [System Architecture](#system-architecture)
+- [Repository Structure](#repository-structure)
+- [Setup](#setup)
+  - [Requirements](#requirements)
+  - [Install](#install)
+  - [Credentials](#credentials)
+  - [Backbone weights](#backbone-weights)
+  - [Verify](#verify)
+- [Usage](#usage)
+  - [Scenario 1: Using the registered tools](#scenario-1-using-the-registered-tools)
+  - [Scenario 2: Extending the system with a new capability](#scenario-2-extending-the-system-with-a-new-capability)
+  - [In the browser](#in-the-browser)
+  - [Management CLI](#management-cli)
+- [Documentation](#documentation)
+
+---
+
+## Overview
+
+RNA foundation models support a broad range of downstream tasks, but using them still
+requires machine-learning expertise, and conventional task-specific fine-tuning produces a
+full-sized checkpoint for every capability — so serving *n* tasks means storing and loading
+*n* copies of the same large model.
+
+AdaptRNA removes both barriers by treating each **task-specific adaptation of a frozen
+foundation model as a callable tool**. Every capability is a lightweight LoRA adapter plus a
+task head (~6 MB) docked onto a single resident RiNALMo backbone, so the agent's tool
+registry *is* an adapter registry: switching capability is a dictionary lookup, not a 2.5 GB
+model reload. The same registry also holds non-neural tools (e.g. a ViennaRNA wrapper), so
+the user sees one uniform tool interface regardless of what sits behind it.
+
+Two loops operate over the system:
+
+- **Use loop** — a natural-language request enters, the *Orchestrator* routes it to whichever
+  tools the registry currently holds, and the answer comes back with the tool call and its
+  output visible.
+- **Extend loop** — a user supplies one labelled table and a description of the task it
+  encodes. The system profiles the data, consults its knowledge base, has *ToolSmith*
+  generate any missing code, checks that code mechanically (executed against the real data in
+  an isolated subprocess) and conceptually (an independent *Verifier* agent), fine-tunes an
+  adapter in the background, and registers the result as a new callable tool — every
+  consequential step behind an explicit human approval.
+
+A fresh install ships **no task definitions and no adapters**. It knows how to serve a
+backbone and how to build tools on it; what those tools are comes entirely from the user's
+own data.
+
+---
+
+## System Architecture
+
+![System Architecture](statics/architecture.png)
+
+The system has two layers. An **agentic system** (Orchestrator, ToolSmith, Verifier — each
+served by Claude Opus 5 through its native tool-calling interface, each configurable
+independently) interprets requests and routes them; beneath it an **engine** holds one frozen
+backbone with task-specific adapters docked onto it. Both loops meet at the **registry**, a
+persistent store of adapter-based and non-neural tools.
+
+Two rules are enforced in code rather than by prompt:
+
+1. **Hyperparameters come only from the knowledge base.** Every plan is stamped by
+   `recommend_training_config`; `start_training` refuses a plan without that stamp, so a
+   hand-assembled plan is rejected rather than trusted.
+2. **Nothing consequential happens without human approval.** Spending GPU hours, registering
+   a new servable tool, and writing generated code into the repository each route through a
+   dedicated approval gate. Approval at one step never implies approval for the next.
+
+---
+
+## Repository Structure
 
 ```
-engine/           the fine-tuning engine: one frozen backbone, swappable LoRA adapters
-agentic/          the agent platform: orchestrator, Tool-Hub, training pipeline, codegen
-adaptrna_custom/  tools built for this project — generated, reviewed by you, then yours
-ui/               web frontend (Phase 9)
-plans/            the master plan and one detailed plan per phase
+.
+├── engine/                     the fine-tuning engine — one frozen backbone, swappable adapters
+│   ├── rinalmo_hub/            framework: registry, LoRA injection, adapter format, multi-adapter hub
+│   │   ├── hub.py              RiNALMoHub — N adapters resident in one backbone
+│   │   ├── lora.py             LoRA injection, freezing, adapter switching
+│   │   ├── adapter.py          adapter file format (weights + head + LoRA geometry + metadata)
+│   │   ├── tasks/              task definitions (splice site, MRL, secondary structure)
+│   │   └── cli/                train.py · evaluate.py · predict.py
+│   └── rinalmo/                vendored RiNALMo backbone (model, alphabet, heads, datamodules)
+│
+├── agentic/                    the platform — package `adaptrna_agentic`
+│   └── adaptrna_agentic/
+│       ├── agents/             Orchestrator · ToolSmith · Verifier (LangGraph) + tool factory
+│       ├── toolhub/            manifest, registry, adapter runtime, external tools, doctor, prune
+│       ├── codegen/            generation pipeline, verification harness, sandbox, staging
+│       ├── jobs/               detached training-job runner, store, run analysis
+│       ├── profiling/          data profiler + config recommender
+│       ├── knowledge/          validated hyperparameter knowledge base (YAML)
+│       ├── api/                FastAPI service + SSE streaming
+│       └── cli/                chat.py · serve.py · toolhub.py
+│
+├── adaptrna_custom/            tools built on this install — generated, reviewed, then yours
+│   ├── tasks/<name>/           task.py · datamodule.py · config.yaml · spec.json
+│   └── tools/                  non-neural wrappers (e.g. ViennaRNA secondary structure)
+│
+├── ui/                         browser client — plain ES modules, no build step
+├── documents/                  technical documentation
+├── plans/                      master plan + one detailed plan per phase
+├── docs/                       figures used by this README
+└── README.md
 ```
 
-Runtime state lives at the repo root and is git-ignored: `weights/` `dataset/` `outputs/`
-`toolhub_data/` `chat_data/` `jobs_data/`.
+Runtime state lives at the repository root and is git-ignored: `weights/` (backbone
+checkpoint), `dataset/`, `outputs/` (one directory per training run), `toolhub_data/` (tool
+manifest + registry-owned adapters), `chat_data/` (conversation store), `jobs_data/`
+(training-job records).
 
-## Install
+---
+
+## Setup
+
+### Requirements
+
+| | Required | Notes |
+|---|---|---|
+| Python | ≥ 3.10 | developed and tested on 3.12 |
+| OS | Linux | job supervision reads `/proc`, the codegen sandbox uses `setrlimit`/`setsid` |
+| GPU | training and fast inference only | everything else, including both test suites, runs on CPU |
+| Disk | ~10 GB | 2.6 GB backbone + datasets + run outputs |
+| Network | Anthropic API, weight/dataset downloads | the web UI itself is fully offline — no CDN assets |
+
+### Install
 
 ```bash
+git clone https://github.com/mhahmadi258/adaptrna.git
+cd adaptrna
+
 python -m venv .venv && source .venv/bin/activate
+
+# Both layers, editable, from the repo root
 python -m pip install -e ./engine -e ./agentic
-python -m pip install flash-attn --no-build-isolation    # CUDA only; match your torch build
+
+# CUDA only — must match your torch build. Imported lazily; without it, training on
+# CUDA falls back to a much slower plain-PyTorch attention path.
+python -m pip install flash-attn --no-build-isolation
+
+# Test suites
+python -m pip install -e "./engine[dev]" -e "./agentic[dev]"
 ```
 
-Put your Anthropic key in `.env` at the repo root (`ANTHROPIC_API_KEY=…`; git-ignored),
-point the hub at a backbone checkpoint, and check the install:
+### Credentials
+
+Only the LLM-backed paths need a key — the management CLI, both test suites and every
+deterministic service run without one.
 
 ```bash
+# repo root, git-ignored
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
+```
+
+### Backbone weights
+
+```bash
+# Download once (caches in ~/.cache/rinalmo_pretrained/)
+python -c "from rinalmo.pretrained import get_pretrained_model; get_pretrained_model('giga-v1')"
+
+# Tell the hub where it is — every training plan takes the checkpoint from the manifest,
+# so a run always trains against exactly the backbone the hub serves
 python -m adaptrna_agentic.cli.toolhub config --weights ~/.cache/rinalmo_pretrained/giga-v1.pt
-python -m adaptrna_agentic.cli.toolhub doctor
 ```
 
-## From one CSV to a servable tool
+### Verify
 
 ```bash
-python -m adaptrna_agentic.cli.chat --session work
+python -m adaptrna_agentic.cli.toolhub doctor     # checks the install; changes nothing
+cd engine  && python -m pytest && cd ..           # CPU, no weights, no datasets
+cd agentic && python -m pytest && cd ..           # CPU, no network, no API key
+python -m adaptrna_agentic.cli.toolhub list       # a fresh install has nothing to list
 ```
 
-A fresh install has nothing registered. Point it at a table — `.csv`/`.tsv`, optionally
-gzipped — with one sequence column and one label column (binary, multiclass, or a
-continuous target), and four steps take it from there, each its own turn, each ending in
-your approval:
+---
+
+## Usage
+
+### Scenario 1: Using the registered tools
+
+```bash
+python -m adaptrna_agentic.cli.chat                 # REPL, session 'default'
+python -m adaptrna_agentic.cli.chat --session paper # named persistent session
+python -m adaptrna_agentic.cli.chat --once "Is GGC...ACU positive under donor_site?"
+```
+
+The Orchestrator decides whether a tool call is required and, when it is, invokes the
+corresponding tool from the registry; the call, its output and the response are all shown.
 
 | Ask | What happens |
 |---|---|
-| *"Profile ~/data/my_data.csv"* | Reads the file and proposes columns, target type, split and any data-quality warnings (duplicates, leakage, imbalance) — **approval**, editable field by field |
-| *"Build the task"* | The approved spec renders straight into a data loader and head — deterministically, from a reviewed template, whenever the shape is one of the three supported (binary/multiclass/regression); only an unusual spec falls back to writing and verifying code with a model. Either way: a 7-check harness + independent review → **approval on the diff** |
-| *"Recommend a training config"* | Hyperparameters **derived** from the approved spec against a generic, validated knowledge base — no per-task guesswork, because there is no known task yet — **approval**, editable |
-| *"Register it"* | The finished run becomes a servable tool — **approval** |
+| *"What tools are available?"* | Lists the registry — adapter-based and non-neural alike — with each tool's state and purpose |
+| *"Does this sequence contain a donor splice site?"* | Activates the matching adapter on the resident backbone and returns a probability |
+| *"Predict the MRL of this 5' UTR"* | Same path, continuous output |
+| *"Give me the secondary structure of this sequence"* | Routes to the ViennaRNA-based tool — same workflow from the user's side |
+| *"Disable donor_site"* / *"test it"* | Lifecycle operations; a disabled tool refuses with the fix in the message |
 
-Once a tool exists: *"What tools are available?"* lists the registry with each tool's
-state and purpose; *"Is this sequence positive?"* activates the matching adapter and
-predicts; *"Disable my_tool"* / *"test it"* are lifecycle operations, and a disabled tool
-refuses with the fix in the message.
+No model is loaded or evicted between these: the backbone loads once when the session opens
+and stays frozen, and the adapters remain docked onto that single instance, so the memory
+footprint does not change as you move between capabilities.
 
-Two rules the platform enforces in code rather than by prompt: hyperparameters only ever
-come from the knowledge base — validated settings plus rules derived from your own
-approved data, never invented — and nothing consequential (GPU hours, a new servable tool,
-code written into your repo) happens without your approval.
+### Scenario 2: Extending the system with a new capability
 
-## In the browser
+Bring one delimited table — `.csv`/`.tsv`, optionally gzipped — with one sequence column and
+one label column holding a binary, multiclass or continuous target. Four steps take it to a
+registered tool, each its own turn, each ending in your approval; nothing auto-chains.
+
+| Ask | What happens |
+|---|---|
+| *"Profile ~/data/my_data.csv"* | Reads the file and proposes an interpretation — sequence column, label column, target type, split, plus data-quality warnings (duplicate sequences, leakage across a column split, class imbalance) → **approval**, editable field by field |
+| *"Build the task"* | The approved spec renders into a data loader and head — deterministically, from a reviewed template, whenever the shape is one of the three supported; an unusual spec falls through to ToolSmith generation. Either way: a 7-check harness run against your real data in an isolated subprocess + independent Verifier review → **approval on the diff** → landed into `adaptrna_custom/` |
+| *"Recommend a training config"* | Hyperparameters derived from the approved spec against the validated knowledge base — never invented → **approval**, editable |
+| *"Register it"* | The finished run's adapter becomes a servable tool → **approval** |
+
+Training runs detached in the background; metrics are reported back when it finishes. Only
+the adapter weights and task head are stored — a few megabytes — never a copy of the
+backbone. Non-neural tools are created and registered through the same process, minus the
+fine-tuning stage.
+
+### In the browser
 
 ```bash
-python -m adaptrna_agentic.cli.serve --open        # 127.0.0.1:8000, opens the UI
+python -m adaptrna_agentic.cli.serve --open       # 127.0.0.1:8000, opens the UI
 ```
 
-The same platform with a face on it: streamed chat, a tool dashboard you can toggle and test
-from, and the approval gate as a dialog. An icon bar on the far left switches the rail beside
-it between your **sessions** and your **training runs** — both resizable, collapsible and
-filterable. Sessions are shared with the terminal — start a conversation in `chat`, continue
-it in the browser, and back.
+The same platform with a face on it: streamed chat in the centre, a tool dashboard on the
+right you can toggle and test from (which tools are enabled is yours to decide — the
+assistant can offer to flip a switch, it cannot flip one), and a rail on the left that
+switches between your sessions and your training runs, with a live-tailing log per run.
+Approvals arrive as dialogs showing the exact command. Sessions are shared with the terminal
+— start a conversation in `chat`, continue it in the browser, and back.
 
-Pick a run and its log takes over the middle column, tailing while the run is going, with
-epoch, step and the latest metrics above it. A run is never *started* from here: that happens
-in the chat, behind the gate below, so nothing spends GPU time without you seeing the command
-first.
+The server binds to loopback and **refuses to start** on any other address without
+`ADAPTRNA_API_TOKEN`, because this service can spend GPU hours and write code into your
+repository. There is no build step: the UI is plain ES modules served by the API.
 
-Approvals show the **exact command** — byte for byte what the terminal prints, verified
-against the terminal's own renderer — because the only thing that makes the gate worth
-having is that you can see what you are agreeing to.
-
-**Which tools are enabled is yours to decide.** The assistant can offer to flip a switch; it
-cannot flip one. A disabled tool is reported as disabled and the request stops there, and
-`activate_tool` / `deactivate_tool` come to you as an approval like any other consequential
-action — decline and the manifest is untouched.
-
-It binds to loopback and **refuses to start** on any other address without
-`ADAPTRNA_API_TOKEN` — this service can spend GPU hours and write code into your
-repository. No build step is involved: the UI is plain ES modules served by the API, so
-there is no `npm install` and it works offline.
-
-## Managing it
+### Management CLI
 
 ```bash
-toolhub=  "python -m adaptrna_agentic.cli.toolhub"
+toolhub="python -m adaptrna_agentic.cli.toolhub"
 
-$toolhub list                       # every tool, both kinds
-$toolhub predict <tool> --sequences ACGU...     # adapters
-$toolhub call <tool> sequence=GGGG              # external tools (classical packages you've wrapped)
-$toolhub test <tool>                # smoke / golden tests
-$toolhub doctor                     # what is wrong with this install (changes nothing)
+$toolhub list                                  # every tool, both kinds
+$toolhub predict <tool> --sequences ACGU...    # adapter-based tools
+$toolhub call <tool> sequence=GGGG             # external (non-neural) tools
+$toolhub test <tool>                           # smoke / golden tests
+$toolhub doctor                                # what is wrong with this install
 $toolhub prune staging|artifacts|jobs|runs|sessions [--older-than N] [--yes]
 ```
 
-`doctor` is the first thing to run when something looks off: every failure it reports
-names the command that fixes it. `prune` is the only command that deletes anything — it
-is a dry run unless you pass `--yes`, and it never touches an artifact a registered tool
-depends on.
+`doctor` is the first thing to run when something looks off — every failure it reports names
+the command that fixes it. `prune` is the only command that deletes anything: a dry run
+unless you pass `--yes`, and it never touches an artifact a registered tool depends on.
 
-## Troubleshooting
+---
 
-| Message | Meaning and fix |
+## Documentation
+
+| | |
 |---|---|
-| `ANTHROPIC_API_KEY is not set` | Put it in `.env` at the repo root, or export it |
-| `The engine package is not installed` | `pip install -e ./engine` |
-| `checkpoint '…' does not exist` | `toolhub config --weights /path/to/giga-v1.pt` |
-| `Tool 'x' points at '…', which is gone` | Restore the file, or `toolhub remove x`. `doctor` lists every such case |
-| `Tool 'x' is disabled` | `toolhub activate x` (in chat, just ask) |
-| `This plan did not come from recommend_training_config` | Intentional: hyperparameters must come from the knowledge base |
-| `Job '…' is still running` | One training job at a time; wait, or cancel it |
-| `PID … may since have been reused — refusing to signal it` | The job's process is gone; the record was closed out and nothing was killed |
-| `'…' changed on disk since it was read` | Another process wrote first. Nothing was lost — retry |
-| `is a full fine-tuning export` | Only LoRA adapters can be served; evaluate full-FT exports with the engine CLI |
+| [documents/](documents/README.md) | Technical documentation: architecture, project structure, setup, configuration, testing, extending, one document per module and per workflow |
+| [engine/README.md](engine/README.md) | The fine-tuning engine — complete hyperparameter and task-authoring reference |
+| [agentic/README.md](agentic/README.md) | The agent layer — agents, Tool-Hub, codegen pipeline |
+| [plans/](plans/) | Design rationale and one detailed plan per development phase |
 
-## Known limitations
+---
 
-- **A crashed training run cannot be resumed** mid-flight; start it again.
-- **One training job at a time** by default — two giga runs on one GPU is how you get an
-  out-of-memory failure forty minutes in.
-- **Serving runs in fp32.** Casting the engine to bf16 for non-autocast inference trips a
-  dtype promotion in its `TokenDropout` (see plans/MASTER_PLAN.md §7).
-- **Generated code is accident-isolated, not sandboxed.** Time, memory and file-size
-  limits catch runaway loops; the human diff gate is the real boundary.
-- **The stores detect concurrent writes, they do not prevent them.** Two chat processes
-  are fine; the second to save is asked to retry.
+## Acknowledgment
 
-## Docs
-
-[plans/MASTER_PLAN.md](plans/MASTER_PLAN.md) is the map — architecture, design principles,
-the engine constraints this layer respects, and the phase roadmap. Each phase has its own
-detailed plan beside it. Layer specifics live in [engine/README.md](engine/README.md) and
-[agentic/README.md](agentic/README.md).
+We acknowledge the Centre for Applied Artificial Intelligence at Macquarie University for
+funding this research.
