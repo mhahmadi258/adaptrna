@@ -13,6 +13,7 @@ weights/
 outputs/
 adapters/
 toolhub_data/
+adaptrna_custom/
 chat_data/
 jobs_data/
 # demo data for the codegen flow; regenerate with agentic/scripts/make_demo_data.py
