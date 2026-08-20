@@ -8,7 +8,7 @@ This repository implements the system described in:
 ---
 
 ## 🎥 Demo Video
-[Watch the Demo](#) <!-- replace with the demo URL -->
+[Watch the Demo](https://youtu.be/ujYRj4pxSlw) 
 
 ---
 
