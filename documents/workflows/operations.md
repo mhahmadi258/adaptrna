@@ -15,7 +15,7 @@ knows how to describe.
 6. [Sessions](#6-sessions)
 7. [Disk usage](#7-disk-usage)
 8. [Known limitations](#8-known-limitations)
-9. [Clean slate: resetting to zero tools](#9-clean-slate-resetting-to-zero-tools)
+9. [Clean slate: resetting the whole install](#9-clean-slate-resetting-the-whole-install)
 
 ---
 
@@ -272,6 +272,8 @@ writer would block every reader, defeating the point of sharing the file.
 
 `doctor` warns above 5 GB for `outputs/`, `toolhub_data/` and `chat_data/`.
 
+To reclaim everything above except `outputs/` in one pass, see `reset.py` in §9.
+
 ## 8. Known limitations
 
 Each of these is a deliberate design choice with a recorded rationale, not an oversight:
@@ -288,17 +290,50 @@ Each of these is a deliberate design choice with a recorded rationale, not an ov
 | **Single-user posture** | Loopback, one token, and the only thing deletable over HTTP is your own conversation. A deliberate design, not a starting point for a shared deployment. |
 | **Linux only** | `/proc/<pid>/stat` for PID identity; `resource.setrlimit` + `os.setsid` for the sandbox |
 
-## 9. Clean slate: resetting to zero tools
+## 9. Clean slate: resetting the whole install
 
 A fresh install of this build should show **no registered tools** — that is a documented
 fact elsewhere ([README.md](../README.md#10-verified-facts)), not just a default. It is not,
-however, automatic: nothing on upgrade deletes a tool you already registered, because
-deleting a user's registered tool is a human action at the CLI, the same reason there is no
-delete endpoint in the API (§5 above).
+however, automatic: nothing on upgrade deletes state you already accumulated, because
+deleting a user's registered tool — or their conversation history, or their job records —
+is a human action, the same reason there is no delete endpoint in the API for most of it
+(§5 above).
 
-If your install carries a tool registered in an earlier session and you want the platform to
-actually start from zero — matching a documentation walkthrough, or preparing a demo — reset
-it by hand, in this order:
+`agentic/scripts/reset.py` is that human action, scripted: it returns the install to what a
+fresh `git clone` + `pip install -e` would leave, in one command. Dry run by default, like
+`prune` (§2):
+
+```bash
+python agentic/scripts/reset.py                 # prints the plan, deletes nothing
+python agentic/scripts/reset.py --yes           # applies it
+```
+
+It clears every registered tool (`toolhub_data/tools.json`'s `tools` map and the registry-owned
+adapter copies under `toolhub_data/adapters/`), anything staged but never landed
+(`toolhub_data/staging/`), the job store (`jobs_data/jobs.json`), the conversation database
+(`chat_data/sessions.sqlite*`), and every generated task/tool under `adaptrna_custom/` —
+keeping only the four files that are actually git-tracked there (`README.md`, `__init__.py`,
+`tasks/__init__.py`, `tools/__init__.py`; `.gitignore` excludes the rest of that directory, so
+this is the one step in the whole script that is not recoverable with `git checkout`).
+
+It deliberately leaves two things alone:
+
+* **The backbone configuration** (`toolhub_data/tools.json`'s `backbone` block) — that is
+  what the hub serves, not a tool, and resetting the install should not make the platform
+  forget where the checkpoint lives. Pass `--forget-backbone` if you want that gone too.
+* **`outputs/*`** — training results. This script is not `git clean -Xdf`; those runs are
+  the point of using the platform, so they are never a candidate for deletion, dry run or
+  applied.
+
+One consequence of clearing `jobs_data/jobs.json` while keeping `outputs/*`: old run
+directories are left with no job record pointing at them. The metrics files on disk are
+untouched, but `analyze_run <old_job_id>` will no longer find a record to look up — there is
+nothing left in `jobs_data/` to resolve that id against. If you want a run's history to
+survive a reset, note its `output_dir` before running the script; the directory itself is
+never touched.
+
+The narrower manual sequence — removing one tool without touching conversations or job
+history — still works and is sometimes the better tool for the job:
 
 ```bash
 python -m adaptrna_agentic.cli.toolhub remove <tool_name>       # once per registered tool
@@ -308,17 +343,5 @@ python -m adaptrna_agentic.cli.toolhub prune staging --yes       # drops anythin
 python -m adaptrna_agentic.cli.toolhub list                      # expect: no tools
 ```
 
-This is **not** something the platform runs on upgrade or on its own — it is written down so
-the sequence is repeatable, not so it is automated. Two things it deliberately leaves alone:
-
-* **The backbone configuration** (`toolhub_data/tools.json`'s `backbone` block) — that is
-  what the hub serves, not a tool, and resetting the tool list should not make the platform
-  forget where the checkpoint lives.
-* **`jobs_data/jobs.json` and `outputs/*`** — historical records of training runs stay.
-  `analyze_run` on an old job still works; since the knowledge base carries no reference band
-  for any task any more, it reports a **baseline** verdict rather than a reference-band
-  comparison, which is accurate — the platform no longer has special knowledge of any task.
-
-`adaptrna_custom/tasks/` needs no equivalent reset in the same sense: a task package left
-there after a tool reset simply has no tool pointing at it any more, and remains trainable
-(`recommend_training_config` can still target it) until you delete the directory yourself.
+Neither path is something the platform runs on upgrade or on its own — both are written down
+so the sequence is repeatable, not so it is automated.

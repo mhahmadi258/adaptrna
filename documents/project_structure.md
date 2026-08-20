@@ -197,9 +197,12 @@ agentic/
 ├── scripts/
 │   ├── make_demo_data.py       [entry] regenerate the demo `sequence,label` CSV for the
 │   │                                  cold-start codegen flow, from a source fold directory
-│   └── update_template_golden.py [entry] regenerate the golden files
-│                                  test_templates_render.py checks rendered output against —
-│                                  run after any change to codegen/templates/, then read the diff
+│   ├── update_template_golden.py [entry] regenerate the golden files
+│   │                                  test_templates_render.py checks rendered output against —
+│   │                                  run after any change to codegen/templates/, then read the diff
+│   └── reset.py                [entry] clean-slate reset of the whole install (tools, jobs,
+│                                  chat, generated code) — keeps `outputs/`; dry run unless
+│                                  `--yes` — see workflows/operations.md §9
 └── tests/                      [test]  611 tests — see testing.md
     ├── conftest.py                    real nano adapter fixtures built through the engine's
     │                                  public API only, over LOCALLY-DEFINED demo task classes
