@@ -26,12 +26,14 @@ None are required. Every one has a documented default.
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | — | [`settings.py`](../agentic/adaptrna_agentic/settings.py) | **Required for any LLM path.** Checked at model construction, not import. Loaded from `<repo>/.env` if not already in the environment. |
+| `ANTHROPIC_API_KEY` | — | [`settings.py`](../agentic/adaptrna_agentic/settings.py) | **Required only when a role's model spec is `anthropic:`-prefixed** (the default). Checked at model construction, not import. Loaded from `<repo>/.env` if not already in the environment. |
 | `ADAPTRNA_MODEL` | `anthropic:claude-opus-5` | `settings.py` | Model spec for **all** roles |
 | `ADAPTRNA_MODEL_ORCHESTRATOR` | ← global | `settings.py` | Per-role override; wins over `ADAPTRNA_MODEL` |
 | `ADAPTRNA_MODEL_TOOLSMITH` | ← global | `settings.py` | Per-role override |
 | `ADAPTRNA_MODEL_VERIFIER` | ← global | `settings.py` | Per-role override |
 | `ADAPTRNA_MAX_TOKENS` | `8192` | `settings.py` | `max_tokens` passed to every chat model |
+| `OPENAI_API_KEY` | — | `langchain_openai.ChatOpenAI` (not AdaptRNA code) | **Required only when a role's model spec is `openai:`-prefixed.** Any non-empty string works against a self-hosted OpenAI-compatible server (e.g. vLLM) that doesn't check it. |
+| `OPENAI_BASE_URL` | `api.openai.com` | the underlying `openai` SDK client (not AdaptRNA code) | Redirects `openai:`-prefixed roles to a different endpoint — this is how a role points at a local server (e.g. `http://localhost:8005/v1`) instead of hosted OpenAI. |
 | `ADAPTRNA_TOOLHUB_DIR` | `<repo>/toolhub_data` | [`toolhub/manifest.py`](../agentic/adaptrna_agentic/toolhub/manifest.py) | Manifest, adapters, staging. `--data-dir` overrides it again. |
 | `ADAPTRNA_JOBS_DIR` | `<repo>/jobs_data` | [`jobs/store.py`](../agentic/adaptrna_agentic/jobs/store.py) | Job records |
 | `ADAPTRNA_CHAT_DIR` | `<repo>/chat_data` | [`cli/chat.py`](../agentic/adaptrna_agentic/cli/chat.py) | `sessions.sqlite` — shared by terminal and HTTP |
@@ -40,7 +42,16 @@ None are required. Every one has a documented default.
 Precedence for models: `ADAPTRNA_MODEL_<ROLE>` → `ADAPTRNA_MODEL` → `DEFAULT_MODEL`. The
 spec string is provider-prefixed and resolved by LangChain's `init_chat_model`; that string
 is the **entire** provider abstraction, so switching providers is a config edit, never a
-code change. No module imports `langchain_anthropic` directly.
+code change. No module imports `langchain_anthropic` or `langchain_openai` directly — both
+are installed (`agentic/pyproject.toml`), and only `models.py` touches `init_chat_model`.
+
+This includes pointing a role at a local, OpenAI-compatible server (e.g. vLLM) instead of a
+hosted provider: set the spec to `openai:<served-model-name>` and `OPENAI_BASE_URL` to the
+server's endpoint. Verified working against a local vLLM + Qwen3 server, launched with
+`--enable-auto-tool-choice --tool-call-parser qwen3_xml` — both `bind_tools` (used by
+`orchestrator`) and forced-`tool_choice` structured output (used by `toolsmith`/`verifier`)
+round-tripped correctly. See [extending.md § Swap the model provider](extending.md#swap-the-model-provider)
+for the full recipe.
 
 The three roles are fixed: `ROLES = ("orchestrator", "toolsmith", "verifier")`. Everything
 else in the platform is a deterministic service and never talks to a model.

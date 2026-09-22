@@ -58,9 +58,10 @@ return init_chat_model(spec, max_tokens=..., **overrides)
 ```
 
 LangChain's `init_chat_model` resolves the provider prefix, so no module imports
-`langchain_anthropic` — swapping providers is a `Settings` edit. Checking the key at
-construction rather than import is what lets every deterministic code path and the entire
-test suite run without a credential.
+`langchain_anthropic` or `langchain_openai` — swapping providers is a `Settings` edit.
+Checking the key at construction rather than import is what lets every deterministic code
+path and the entire test suite run without a credential. Verified for the `openai:` path
+against a local vLLM server — see [configuration.md](../configuration.md#1-environment-variables).
 
 ## 3. `orchestrator.py` — the graph
 

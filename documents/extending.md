@@ -420,6 +420,41 @@ nothing imports `langchain_anthropic` anywhere. A new provider needs its LangCha
 integration installed, and one line in `build_chat_model` if it requires a different
 credential check than `require_api_key()`.
 
+### Worked example: a local, OpenAI-compatible server (e.g. vLLM)
+
+`langchain-openai` is already a dependency (`agentic/pyproject.toml`), so no code change is
+needed — only `.env`:
+
+```bash
+ADAPTRNA_MODEL=openai:<served-model-name>          # e.g. openai:Qwen/Qwen3.8-27B-FP8
+OPENAI_API_KEY=not-needed                          # any non-empty string; local servers don't check it
+OPENAI_BASE_URL=http://localhost:<port>/v1          # e.g. http://localhost:8005/v1
+```
+
+`spec.startswith("anthropic")` is false for an `openai:` spec, so `require_api_key()` (which
+only checks `ANTHROPIC_API_KEY`) is skipped — no change needed there either.
+`OPENAI_API_KEY`/`OPENAI_BASE_URL` aren't read by any AdaptRNA module; `ChatOpenAI` resolves
+them itself once `init_chat_model` dispatches to it.
+
+**Verify tool calling before switching a role that depends on it** (all three do —
+`orchestrator` via `bind_tools`, `toolsmith`/`verifier` via `with_structured_output`). A
+server that isn't launched with tool-call support rejects `tool_choice: "auto"` outright:
+
+```bash
+curl -s http://localhost:<port>/v1/chat/completions -H "Content-Type: application/json" -d '{
+  "model": "<served-model-name>",
+  "messages": [{"role": "user", "content": "..."}],
+  "tools": [{"type": "function", "function": {"name": "x", "parameters": {"type": "object", "properties": {}}}}],
+  "tool_choice": "auto"
+}'
+```
+
+A `"tool_choice requires --enable-auto-tool-choice and --tool-call-parser"` error means the
+server needs restarting with both flags plus a parser matching the model family (for
+Qwen3: `--tool-call-parser qwen3_xml --reasoning-parser qwen3` — the reasoning parser keeps
+the model's `<think>` output out of message `content`; check the server's own docs for other
+model families). A response with a populated `tool_calls` array means it's ready.
+
 ---
 
 ## Things not to do

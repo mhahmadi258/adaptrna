@@ -26,7 +26,8 @@ adaptrna/
 ├── weights/           [gen]  backbone checkpoint (absent here; hub points at ~/.cache)
 ├── dataset/           [gen]  downloaded datasets (absent in this checkout)
 ├── .venv/             [gen]  Python 3.12 virtualenv
-├── .env               [cfg]  ANTHROPIC_API_KEY — git-ignored, never printed
+├── .env               [cfg]  ANTHROPIC_API_KEY (default) or OPENAI_API_KEY/OPENAI_BASE_URL
+│                             (local/self-hosted provider) — git-ignored, never printed
 ├── .gitignore         [cfg]
 └── README.md          [doc]  user-facing quick start
 ```

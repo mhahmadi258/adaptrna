@@ -122,7 +122,7 @@ Four structural rules the graph encodes:
 1. **`toolhub/` never imports LangChain.** [`agents/tool_factory.py`](../../agentic/adaptrna_agentic/agents/tool_factory.py)
    is the only place the two meet.
 2. **`models.py` is the only provider-aware module.** Nothing else imports
-   `langchain_anthropic`, even indirectly by name.
+   `langchain_anthropic` or `langchain_openai`, even indirectly by name.
 3. **Every engine import is lazy**, inside a function. That is what keeps the agentic
    package importable in milliseconds and its unit tests torch-free until a fixture asks
    for a model.

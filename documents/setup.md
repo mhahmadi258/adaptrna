@@ -74,6 +74,10 @@ echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
 environment variables always win over the file**. Missing key produces one actionable
 message naming the file to put it in.
 
+This is the default (`anthropic:`-prefixed) path. Pointing a role at a local or
+self-hosted OpenAI-compatible server instead needs no code change, only different `.env`
+values — see [extending.md § Swap the model provider](extending.md#swap-the-model-provider).
+
 ## 4. Point the hub at a backbone
 
 The engine's `configs/base.yaml` defaults `pretrained_weights` to `weights/giga-v1.pt`
@@ -158,6 +162,7 @@ that fixes it. It is the first thing to run whenever anything looks off. See
 | `langgraph-checkpoint-sqlite>=3.0` | `SqliteSaver` — sessions shared across front ends |
 | `langchain>=1.0` | `init_chat_model`, `StructuredTool`, message types |
 | `langchain-anthropic` | resolved by `init_chat_model` from the `anthropic:` prefix; **never imported directly** anywhere in the codebase |
+| `langchain-openai` | resolved by `init_chat_model` from the `openai:` prefix — the path used for a local/self-hosted OpenAI-compatible server; also never imported directly |
 | `python-dotenv` | `.env` loading |
 | `fastapi>=0.110`, `uvicorn>=0.27` | the HTTP service |
 | *(extra)* `dev` → `pytest>=7.0` | the test suite |
@@ -179,6 +184,7 @@ them; installing only the agentic package produces a clear `ToolHubError` naming
 |---|---|
 | `torch` 2.10.0 · `lightning` 2.6.1 · `peft` 0.20.0 · `torchmetrics` 1.9.0 | `numpy` 2.4.1 · `pandas` 3.0.2 · `scikit-learn` 1.9.0 |
 | `langchain` 1.3.15 · `langgraph` 1.2.11 · `langchain-core` 1.5.4 | `langchain-anthropic` 1.5.5 · `anthropic` 0.121.0 |
+| `langchain-openai` 1.6.3 · `openai` 3.17.0 | |
 | `langgraph-checkpoint-sqlite` 3.1.1 | `fastapi` 0.136.0 · `uvicorn` 0.45.0 |
 | `flash_attn` 2.3.2 | `ViennaRNA` 2.7.2 · `playwright` 1.62.0 · `pytest` 9.1.1 |
 
